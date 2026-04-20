@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>ハンズフリー音声会話</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#06090f}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useRef, useEffect, useCallback } = React;
+
+const GROQ_STT   = "https://api.groq.com/openai/v1/audio/transcriptions";
+const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent";
+const SPEAK_THR      = 22;
+const SPEAK_FRAMES   = 8;
+const SILENCE_THR    = 14;
+const SILENCE_FRAMES = 90;
+const INT_THR        = 25;
+const INT_FRAMES     = 15;
+const CHECK_MS       = 16;
+const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
+
+const css = `
+@import url('https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@300;400;700&family=Share+Tech+Mono&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overscroll-behavior:none}
+body{background:#06090f;color:#e2e8f0;font-family:'Zen Kaku Gothic New',sans-serif;min-height:100vh}
+.app{max-width:480px;margin:0 auto;min-height:100vh;display:flex;flex-direction:column}
+.setup{flex:1;display:flex;flex-direction:column;gap:16px;padding:20px 18px;overflow-y:auto}
+.setup-hd{font-size:1rem;font-weight:700;color:#c084fc;text-align:center;padding:8px 0}
+.field{display:flex;flex-direction:column;gap:5px}
+.lbl{font-family:'Share Tech Mono',monospace;font-size:.64rem;color:#6b7280;letter-spacing:.1em;text-transform:uppercase}
+.inp{background:rgba(168,85,247,.06);border:1px solid rgba(168,85,247,.2);border-radius:10px;padding:11px 13px;color:#e2e8f0;font-size:.86rem;width:100%;outline:none;transition:border-color .2s}
+.inp:focus{border-color:rgba(168,85,247,.55)}
+.hint{font-size:.69rem;color:#4b5563;line-height:1.55}
+.hint a{color:#818cf8;text-decoration:none}
+.btn-go{width:100%;padding:14px;background:linear-gradient(135deg,#7c3aed,#6d28d9);border:none;border-radius:12px;color:#fff;font-size:.95rem;font-family:'Zen Kaku Gothic New',sans-serif;font-weight:700;cursor:pointer;transition:opacity .2s,transform .1s;margin-top:4px}
+.btn-go:active{transform:scale(.98);opacity:.85}
+.err-box{background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.22);border-radius:8px;padding:9px 13px;font-size:.78rem;color:#f87171;line-height:1.5}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.status-area{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:24px 20px 16px;flex-shrink:0}
+.pulse-ring{width:110px;height:110px;border-radius:50%;display:flex;align-items:center;justify-content:center;position:relative;transition:all .4s;flex-shrink:0}
+.pulse-ring.waiting{background:rgba(55,65,81,.4);border:3px solid rgba(55,65,81,.6)}
+.pulse-ring.recording{background:rgba(239,68,68,.15);border:3px solid #ef4444;animation:pr 1.4s infinite}
+.pulse-ring.processing{background:rgba(251,191,36,.1);border:3px solid rgba(251,191,36,.5)}
+.pulse-ring.speaking{background:rgba(129,140,248,.12);border:3px solid rgba(129,140,248,.6);animation:ps 2s infinite}
+.pulse-ring.interrupted{background:rgba(239,68,68,.2);border:3px solid #ef4444}
+@keyframes pr{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,.4)}50%{box-shadow:0 0 0 20px rgba(239,68,68,0)}}
+@keyframes ps{0%,100%{box-shadow:0 0 0 0 rgba(129,140,248,.35)}50%{box-shadow:0 0 0 22px rgba(129,140,248,0)}}
+.pulse-icon{font-size:2.8rem}
+.status-text{font-family:'Share Tech Mono',monospace;font-size:.86rem;letter-spacing:.05em;text-align:center;line-height:1.7;white-space:pre-line;transition:color .3s}
+.status-text.waiting{color:#4b5563}
+.status-text.recording{color:#f87171;animation:blink 1s infinite}
+.status-text.processing{color:#fbbf24}
+.status-text.speaking{color:#818cf8}
+.status-text.interrupted{color:#f87171}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.5}}
+.badges{display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
+.badge{font-family:'Share Tech Mono',monospace;font-size:.6rem;padding:3px 8px;border-radius:20px;letter-spacing:.06em}
+.badge.ok{background:rgba(52,211,153,.12);border:1px solid rgba(52,211,153,.3);color:#34d399}
+.badge.off{background:rgba(55,65,81,.3);border:1px solid rgba(55,65,81,.5);color:#4b5563}
+.badge.warn{background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);color:#fbbf24}
+.vol-wrap{width:220px}
+.vol-track{height:6px;background:rgba(255,255,255,.06);border-radius:3px;position:relative}
+.vol-fill{height:100%;border-radius:3px;transition:width .08s,background .2s;position:absolute;left:0;top:0}
+.vol-thr{position:absolute;top:-3px;height:12px;width:2px;border-radius:1px;background:rgba(248,113,113,.7)}
+.vol-labels{display:flex;justify-content:space-between;margin-top:4px}
+.vol-lbl{font-family:'Share Tech Mono',monospace;font-size:.58rem;color:#374151}
+.chat{flex:1;overflow-y:auto;padding:0 16px 10px;display:flex;flex-direction:column;gap:10px;-webkit-overflow-scrolling:touch}
+.row{display:flex;flex-direction:column;gap:3px}
+.row-lbl{font-family:'Share Tech Mono',monospace;font-size:.6rem;color:#2d3748;padding:0 2px}
+.bubble{max-width:86%;padding:9px 13px;border-radius:14px;font-size:.88rem;line-height:1.7;word-break:break-word;white-space:pre-wrap}
+.bubble.user{align-self:flex-end;background:rgba(124,58,237,.2);border:1px solid rgba(168,85,247,.25);border-bottom-right-radius:3px;color:#ddd6fe}
+.bubble.ai{align-self:flex-start;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-bottom-left-radius:3px;color:#e2e8f0}
+.bubble.ai.now{border-color:rgba(129,140,248,.5);background:rgba(129,140,248,.07);animation:gb 2s infinite}
+.bubble.ai.cut{border-color:rgba(248,113,113,.25);background:rgba(248,113,113,.04)}
+@keyframes gb{0%,100%{border-color:rgba(129,140,248,.4)}50%{border-color:rgba(129,140,248,.8)}}
+.cut-lbl{font-size:.62rem;font-family:'Share Tech Mono',monospace;color:#f87171;opacity:.65;padding:0 3px}
+.thinking{display:flex;gap:5px;align-items:center;padding:2px 0}
+.td{width:6px;height:6px;border-radius:50%;background:#6b7280;animation:bn .8s infinite}
+.td:nth-child(2){animation-delay:.15s}.td:nth-child(3){animation-delay:.3s}
+@keyframes bn{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
+.bottom{padding:8px 18px 14px;border-top:1px solid rgba(168,85,247,.1);display:flex;flex-direction:column;gap:8px;flex-shrink:0}
+.sens-row{display:flex;align-items:center;gap:8px}
+.sens-lbl{font-family:'Share Tech Mono',monospace;font-size:.62rem;color:#374151;white-space:nowrap}
+.sens-sl{flex:1;accent-color:#a78bfa}
+.btn-row{display:flex;gap:8px;justify-content:center}
+.btn-s{padding:7px 14px;border:1px solid rgba(168,85,247,.2);border-radius:8px;background:transparent;color:#818cf8;font-size:.7rem;font-family:'Share Tech Mono',monospace;cursor:pointer;transition:all .15s}
+.btn-s:active{background:rgba(168,85,247,.1)}
+.btn-s.red{color:#f87171;border-color:rgba(248,113,113,.2)}
+.btn-s.yellow{color:#fbbf24;border-color:rgba(251,191,36,.2)}
+.overlay{position:fixed;inset:0;background:#06090f;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;padding:32px;z-index:100}
+.overlay-icon{font-size:3rem;opacity:.7}
+.overlay-title{font-size:1.1rem;font-weight:700;color:#c084fc;text-align:center}
+.overlay-desc{font-size:.83rem;color:#6b7280;text-align:center;line-height:1.8}
+.btn-start{padding:16px 36px;background:linear-gradient(135deg,#7c3aed,#6d28d9);border:none;border-radius:14px;color:#fff;font-size:1.1rem;font-family:'Zen Kaku Gothic New',sans-serif;font-weight:700;cursor:pointer}
+`;
+
+const ICONS  = {waiting:"🎧",recording:"🔴",processing:"⚡",speaking:"🔊",interrupted:"⚡"};
+const STATUS = {
+  waiting:    "声を出すと\n自動で録音が始まります",
+  recording:  "録音中\n（黙ると自動送信）",
+  processing: "Gemini 3.1 Pro\n思考中...",
+  speaking:   "再生中\n（声で割り込み可）",
+  interrupted:"割り込み検知\n録音中...",
+};
+
+function App() {
+  const [cfg,setCfg]         = useState(()=>{try{return JSON.parse(localStorage.getItem("hf_vc4")||"null")}catch{return null}});
+  const [form,setForm]       = useState({groq:"",gemini:"",sbv2:"",sys:"あなたは親切で会話好きな日本語AIアシスタントです。簡潔に話し言葉で自然な会話をしてください。"});
+  const [started,setStarted] = useState(false);
+  const [mode,setMode]       = useState("waiting");
+  const [msgs,setMsgs]       = useState([]);
+  const [err,setErr]         = useState("");
+  const [vol,setVol]         = useState(0);
+  const [sens,setSens]       = useState(INT_THR);
+  const [wakeLock,setWakeLock]   = useState(false);
+  const [silentOk,setSilentOk]   = useState(false);
+  const [bgVis,setBgVis]         = useState(true);
+
+  const modeRef    = useRef("waiting");
+  const cfgRef     = useRef(null);
+  const sensRef    = useRef(INT_THR);
+  const histRef    = useRef([]);
+  const vadRef     = useRef(null);
+  const recRef     = useRef(null);
+  const chunksRef  = useRef([]);
+  const audioRef   = useRef(null);
+  const spokenRef  = useRef("");
+  const endRef     = useRef(null);
+  const wlRef      = useRef(null);
+  const silRef     = useRef(null);
+
+  useEffect(()=>{modeRef.current=mode},[mode]);
+  useEffect(()=>{cfgRef.current=cfg},[cfg]);
+  useEffect(()=>{sensRef.current=sens},[sens]);
+  useEffect(()=>{endRef.current?.scrollIntoView({behavior:"smooth"})},[msgs]);
+
+  const setMode2=(m)=>{setMode(m);modeRef.current=m;};
+
+  const reqWakeLock=useCallback(async()=>{
+    try{
+      if(!("wakeLock" in navigator))return;
+      const s=await navigator.wakeLock.request("screen");
+      wlRef.current=s; setWakeLock(true);
+      s.addEventListener("release",()=>{setWakeLock(false);wlRef.current=null;});
+    }catch(e){console.warn("WakeLock:",e.message);}
+  },[]);
+
+  const startSilent=useCallback(()=>{
+    if(silRef.current)return;
+    const a=new Audio(SILENT_WAV);
+    a.loop=true; a.volume=0.001;
+    a.play().then(()=>{silRef.current=a;setSilentOk(true);}).catch(()=>{});
+  },[]);
+
+  useEffect(()=>{
+    if(!started)return;
+    const fn=async()=>{
+      const v=document.visibilityState==="visible";
+      setBgVis(v);
+      if(v){
+        if(!wlRef.current)await reqWakeLock();
+        if(silRef.current?.paused)silRef.current.play().catch(()=>{});
+      }
+    };
+    document.addEventListener("visibilitychange",fn);
+    return()=>document.removeEventListener("visibilitychange",fn);
+  },[started,reqWakeLock]);
+
+  function saveConfig(){
+    if(!form.groq.trim()){setErr("Groq APIキーを入力");return;}
+    if(!form.gemini.trim()){setErr("Gemini APIキーを入力");return;}
+    if(!form.sbv2.trim()){setErr("Style-Bert-VITS2 URLを入力");return;}
+    const c={groq:form.groq.trim(),gemini:form.gemini.trim(),sbv2:form.sbv2.trim().replace(/\/$/,""),sys:form.sys.trim()};
+    localStorage.setItem("hf_vc4",JSON.stringify(c));
+    setCfg(c);cfgRef.current=c;setErr("");
+  }
+
+  const startVAD=useCallback(async()=>{
+    if(vadRef.current)return;
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    const ctx=new(window.AudioContext||window.webkitAudioContext)();
+    const src=ctx.createMediaStreamSource(stream);
+    const an=ctx.createAnalyser();
+    an.fftSize=512; src.connect(an);
+    const data=new Uint8Array(an.frequencyBinCount);
+    const opts=MediaRecorder.isTypeSupported("audio/webm;codecs=opus")?{mimeType:"audio/webm;codecs=opus"}:MediaRecorder.isTypeSupported("audio/webm")?{mimeType:"audio/webm"}:{};
+    const rec=new MediaRecorder(stream,opts);
+    recRef.current=rec;
+    rec.ondataavailable=e=>{if(e.data.size>0)chunksRef.current.push(e.data);};
+    rec.onstop=()=>runPipeline(rec.mimeType||"audio/webm");
+    let sc=0,sic=0,ic=0,lt=0,isRec=false;
+    const loop=(ts)=>{
+      if(ts-lt<CHECK_MS){vadRef.current.raf=requestAnimationFrame(loop);return;}
+      lt=ts;
+      an.getByteFrequencyData(data);
+      const avg=data.reduce((a,b)=>a+b,0)/data.length;
+      setVol(avg);
+      const m=modeRef.current;
+      if(m==="speaking"){
+        if(avg>sensRef.current){ic++;if(ic>=INT_FRAMES){ic=0;doInterrupt();}}else ic=0;
+        sc=0;sic=0;
+      }else if(m==="waiting"){
+        ic=0;
+        if(avg>SPEAK_THR){sc++;if(sc>=SPEAK_FRAMES&&!isRec){isRec=true;sic=0;chunksRef.current=[];rec.start(100);setMode2("recording");}}else sc=0;
+      }else if(m==="recording"){
+        ic=0;
+        if(avg<SILENCE_THR){sic++;if(sic>=SILENCE_FRAMES){sic=0;sc=0;isRec=false;rec.stop();setMode2("processing");}}else sic=0;
+      }else{sc=0;sic=0;ic=0;}
+      vadRef.current.raf=requestAnimationFrame(loop);
+    };
+    vadRef.current={ctx,stream,an,raf:requestAnimationFrame(loop)};
+  },[]);
+
+  const doInterrupt=useCallback(()=>{
+    if(modeRef.current!=="speaking")return;
+    if(audioRef.current){audioRef.current.pause();audioRef.current.onended=null;audioRef.current=null;}
+    const spoken=spokenRef.current;
+    if(spoken)histRef.current.push({role:"model",parts:[{text:spoken+"…（中断）"}]});
+    setMsgs(m=>m.map(x=>x.now?{...x,now:false,cut:true}:x));
+    setMode2("interrupted");
+    setTimeout(()=>{chunksRef.current=[];if(recRef.current?.state==="inactive"){recRef.current.start(100);setMode2("recording");}},350);
+  },[]);
+
+  const runPipeline=useCallback(async(mime)=>{
+    const c=cfgRef.current;if(!c)return;
+    try{
+      const ext=mime.includes("mp4")?"mp4":mime.includes("ogg")?"ogg":"webm";
+      const blob=new Blob(chunksRef.current,{type:mime});
+      if(blob.size<1000){setMode2("waiting");return;}
+      const fd=new FormData();
+      fd.append("file",blob,`rec.${ext}`);
+      fd.append("model","whisper-large-v3-turbo");
+      fd.append("language","ja");
+      fd.append("response_format","text");
+      const r1=await fetch(GROQ_STT,{method:"POST",headers:{Authorization:`Bearer ${c.groq}`},body:fd});
+      if(!r1.ok)throw new Error(`STT: ${r1.status}`);
+      const userText=(await r1.text()).trim();
+      if(!userText||userText.length<2){setMode2("waiting");return;}
+      setMsgs(m=>[...m,{role:"user",text:userText}]);
+      setMsgs(m=>[...m,{role:"ai",text:"",thinking:true}]);
+      histRef.current.push({role:"user",parts:[{text:userText}]});
+      const r2=await fetch(`${GEMINI_URL}?key=${c.gemini}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({system_instruction:{parts:[{text:c.sys}]},contents:histRef.current})});
+      if(!r2.ok){const j=await r2.json().catch(()=>({}));throw new Error(`Gemini: ${j.error?.message||r2.status}`);}
+      const g=await r2.json();
+      const aiText=g.candidates?.[0]?.content?.parts?.[0]?.text||"（返答なし）";
+      setMsgs(m=>{const cp=[...m];cp[cp.length-1]={...cp[cp.length-1],text:aiText,thinking:false,now:true};return cp;});
+      setMode2("speaking");
+      const r3=await fetch(`${c.sbv2}/tts`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:aiText,style:"Neutral",speed:1.0})});
+      if(!r3.ok)throw new Error(`TTS: ${r3.status}`);
+      const wavBlob=await r3.blob();
+      const url=URL.createObjectURL(wavBlob);
+      const audio=new Audio(url);
+      audioRef.current=audio;
+      spokenRef.current="";
+      audio.addEventListener("timeupdate",()=>{const ratio=audio.duration>0?audio.currentTime/audio.duration:0;spokenRef.current=aiText.slice(0,Math.floor(aiText.length*ratio));});
+      audio.onended=()=>{histRef.current.push({role:"model",parts:[{text:aiText}]});setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));audioRef.current=null;URL.revokeObjectURL(url);setMode2("waiting");};
+      await audio.play();
+      setErr("");
+    }catch(e){setErr(e.message);setMsgs(m=>m[m.length-1]?.thinking?m.slice(0,-1):m);setMode2("waiting");}
+  },[]);
+
+  const handleStart=useCallback(async()=>{
+    try{await startVAD();await reqWakeLock();startSilent();setStarted(true);setMode2("waiting");}
+    catch(e){setErr("マイクへのアクセスが拒否されました");}
+  },[startVAD,reqWakeLock,startSilent]);
+
+  const volPct=Math.min(100,(vol/255)*100);
+  const thrPct=Math.min(100,(sens/255)*100);
+
+  if(!cfg) return (
+    <>
+      <style>{css}</style>
+      <div className="app">
+        <div className="setup">
+          <div style={{textAlign:"center",padding:"8px 0 4px"}}>
+            <div style={{fontSize:"2rem",marginBottom:8}}>🎙</div>
+            <div className="setup-hd">ハンズフリー音声会話</div>
+            <div style={{fontSize:".75rem",color:"#4b5563",marginTop:4}}>設定したらポケットに入れるだけ</div>
+          </div>
+          <div className="field">
+            <div className="lbl">Groq API Key（音声認識）</div>
+            <input className="inp" type="password" placeholder="gsk_..." value={form.groq} onChange={e=>setForm(f=>({...f,groq:e.target.value}))}/>
+            <div className="hint"><a href="https://console.groq.com" target="_blank">console.groq.com</a> で無料取得</div>
+          </div>
+          <div className="field">
+            <div className="lbl">Gemini API Key</div>
+            <input className="inp" type="password" placeholder="AIza..." value={form.gemini} onChange={e=>setForm(f=>({...f,gemini:e.target.value}))}/>
+            <div className="hint"><a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a> → Get API key</div>
+          </div>
+          <div className="field">
+            <div className="lbl">Style-Bert-VITS2 HF Space URL</div>
+            <input className="inp" type="text" placeholder="https://xxx.hf.space" value={form.sbv2} onChange={e=>setForm(f=>({...f,sbv2:e.target.value}))}/>
+          </div>
+          <div className="field">
+            <div className="lbl">AIキャラクター設定</div>
+            <textarea className="inp" rows={3} value={form.sys} onChange={e=>setForm(f=>({...f,sys:e.target.value}))} style={{resize:"vertical"}}/>
+          </div>
+          {err&&<div className="err-box">{err}</div>}
+          <button className="btn-go" onClick={saveConfig}>設定完了 →</button>
+        </div>
+      </div>
+    </>
+  );
+
+  if(!started) return (
+    <>
+      <style>{css}</style>
+      <div className="overlay">
+        <div className="overlay-icon">🎙</div>
+        <div className="overlay-title">ハンズフリー音声会話</div>
+        <div className="overlay-desc">
+          タップすると起動します。<br/>
+          あとはポケットに入れるだけ。<br/><br/>
+          <span style={{color:"#374151",fontSize:".78rem"}}>
+            ✓ 画面自動オフを防止<br/>
+            ✓ 画面オフ後も動作継続<br/>
+            ✓ 自動復帰対応
+          </span>
+        </div>
+        {err&&<div className="err-box" style={{width:"100%"}}>{err}</div>}
+        <button className="btn-start" onClick={handleStart}>🎤 会話を開始する</button>
+        <div style={{fontSize:".72rem",color:"#374151",textAlign:"center"}}>「マイクを許可」を選択してください</div>
+      </div>
+    </>
+  );
+
+  return (
+    <>
+      <style>{css}</style>
+      <div className="app">
+        <div className="main">
+          <div className="status-area">
+            <div className={`pulse-ring ${mode}`}>
+              <span className="pulse-icon">{ICONS[mode]}</span>
+            </div>
+            <div className={`status-text ${mode}`}>{STATUS[mode]}</div>
+            <div className="badges">
+              <span className={`badge ${wakeLock?"ok":"warn"}`}>{wakeLock?"🔒 画面ロック中":"⚠ WakeLock未取得"}</span>
+              <span className={`badge ${silentOk?"ok":"off"}`}>{silentOk?"🔈 無音ループ中":"○ ループ停止"}</span>
+              <span className={`badge ${bgVis?"ok":"warn"}`}>{bgVis?"👁 フォアグラウンド":"💤 バックグラウンド"}</span>
+            </div>
+            <div className="vol-wrap">
+              <div className="vol-track">
+                <div className="vol-fill" style={{width:`${volPct}%`,background:vol>sens?"#f87171":vol>SPEAK_THR?"#34d399":"#374151"}}/>
+                <div className="vol-thr" style={{left:`${thrPct}%`}}/>
+              </div>
+              <div className="vol-labels"><span className="vol-lbl">音量</span><span className="vol-lbl">▲割り込みライン</span></div>
+            </div>
+          </div>
+          <div className="chat">
+            {msgs.length===0&&(
+              <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"#1f2937",fontSize:".83rem",textAlign:"center",lineHeight:2,padding:"0 20px"}}>
+                声を出すと自動で録音が始まります<br/>
+                <span style={{fontSize:".72rem"}}>黙ると自動送信 → AI返答 → 自動待機</span>
+              </div>
+            )}
+            {msgs.map((m,i)=>(
+              <div className="row" key={i}>
+                <div className="row-lbl">{m.role==="user"?"あなた":"AI"}</div>
+                <div className={`bubble ${m.role}${m.now?" now":""}${m.cut?" cut":""}`}>
+                  {m.thinking?<div className="thinking"><div className="td"/><div className="td"/><div className="td"/></div>:m.text}
+                </div>
+                {m.cut&&<div className="cut-lbl">⚡ ここで割り込み</div>}
+              </div>
+            ))}
+            <div ref={endRef}/>
+          </div>
+          <div className="bottom">
+            <div className="sens-row">
+              <span className="sens-lbl">割り込み感度</span>
+              <input type="range" className="sens-sl" min={8} max={60} value={sens} onChange={e=>setSens(Number(e.target.value))}/>
+              <span className="sens-lbl" style={{minWidth:26,textAlign:"right"}}>{sens}</span>
+            </div>
+            <div className="btn-row">
+              <button className="btn-s red" onClick={()=>{setMsgs([]);histRef.current=[];}}>クリア</button>
+              <button className="btn-s yellow" onClick={()=>{if(audioRef.current){audioRef.current.pause();audioRef.current=null;}setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));setMode2("waiting");}}>再生停止</button>
+              <button className="btn-s" onClick={()=>{localStorage.removeItem("hf_vc4");setCfg(null);}}>⚙ 設定</button>
+            </div>
+            {err&&<div className="err-box" style={{fontSize:".75rem"}}>{err}</div>}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App/>);
+</script>
+</body>
+</html>
