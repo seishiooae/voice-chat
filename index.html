@@ -22,6 +22,22 @@ const SPEAK_THR=22, SPEAK_FRAMES=8, SILENCE_THR=14, SILENCE_FRAMES=90;
 const INT_THR=25, INT_FRAMES=15, CHECK_MS=16;
 const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
 
+// VOICEVOX人気キャラクター
+const SPEAKERS = [
+  {id:2,  name:"四国めたん（ノーマル）"},
+  {id:3,  name:"ずんだもん（ノーマル）"},
+  {id:8,  name:"春日部つむぎ"},
+  {id:10, name:"雨晴はう"},
+  {id:14, name:"冥鳴ひまり"},
+  {id:20, name:"もち子さん"},
+  {id:23, name:"WhiteCUL（ノーマル）"},
+  {id:27, name:"青山龍星"},
+  {id:29, name:"No.7"},
+  {id:42, name:"ちび式じい"},
+  {id:43, name:"櫻歌ミコ"},
+  {id:52, name:"雀松朱司"},
+];
+
 const css = `
 @import url('https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@300;400;700&family=Share+Tech+Mono&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
@@ -91,14 +107,35 @@ body{background:#06090f;color:#e2e8f0;font-family:'Zen Kaku Gothic New',sans-ser
 .ot{font-size:1.1rem;font-weight:700;color:#c084fc;text-align:center}
 .od{font-size:.83rem;color:#6b7280;text-align:center;line-height:1.8}
 .ob{padding:16px 36px;background:linear-gradient(135deg,#7c3aed,#6d28d9);border:none;border-radius:14px;color:#fff;font-size:1.1rem;font-weight:700;cursor:pointer}
+select.inp{appearance:auto}
 `;
 
 const ICONS={waiting:"🎧",recording:"🔴",processing:"⚡",speaking:"🔊",interrupted:"⚡"};
 const STXT={waiting:"声を出すと\n自動で録音が始まります",recording:"録音中\n（黙ると自動送信）",processing:"Gemini 3.1 Pro\n思考中...",speaking:"再生中\n（声で割り込み可）",interrupted:"割り込み検知\n録音中..."};
 
+// VOICEVOX TTS
+async function voicevoxTTS(text, baseUrl, speaker) {
+  const q = await fetch(`${baseUrl}/audio_query?text=${encodeURIComponent(text)}&speaker=${speaker}`, {method:"POST"});
+  if(!q.ok) throw new Error(`audio_query: ${q.status}`);
+  const query = await q.json();
+  const s = await fetch(`${baseUrl}/synthesis?speaker=${speaker}`, {
+    method:"POST",
+    headers:{"Content-Type":"application/json", "Accept":"audio/wav"},
+    body: JSON.stringify(query)
+  });
+  if(!s.ok) throw new Error(`synthesis: ${s.status}`);
+  return await s.blob();
+}
+
 function App() {
-  const [cfg,setCfg]=useState(()=>{try{return JSON.parse(localStorage.getItem("hf_vc8")||"null")}catch{return null}});
-  const [form,setForm]=useState({groq:"",gemini:"",sys:"あなたは親切で会話好きな日本語AIアシスタントです。簡潔に話し言葉で自然な会話をしてください。必ず100文字以内で答えてください。"});
+  const [cfg,setCfg]=useState(()=>{try{return JSON.parse(localStorage.getItem("hf_vc9")||"null")}catch{return null}});
+  const [form,setForm]=useState({
+    groq:"",
+    gemini:"",
+    voicevox:"https://seishi999-style-bert-vits2-api.hf.space",
+    speaker:3,
+    sys:"あなたは親切で会話好きな日本語AIアシスタントです。簡潔に話し言葉で自然な会話をしてください。必ず100文字以内で答えてください。"
+  });
   const [started,setStarted]=useState(false);
   const [mode,setMode]=useState("waiting");
   const [msgs,setMsgs]=useState([]);
@@ -108,10 +145,11 @@ function App() {
   const [wl,setWl]=useState(false);
   const [silOk,setSilOk]=useState(false);
   const [bgV,setBgV]=useState(true);
+  const [ttsT,setTtsT]=useState("");
 
   const mr=useRef("waiting"),cr=useRef(null),sr2=useRef(INT_THR);
   const hr=useRef([]),vr=useRef(null),rr=useRef(null),ch=useRef([]),er=useRef(null);
-  const wlr=useRef(null),slr=useRef(null),utr=useRef(null);
+  const wlr=useRef(null),slr=useRef(null),ar=useRef(null),utr=useRef(null);
 
   useEffect(()=>{mr.current=mode},[mode]);
   useEffect(()=>{cr.current=cfg},[cfg]);
@@ -124,11 +162,19 @@ function App() {
   useEffect(()=>{if(!started)return;const fn=async()=>{const v=document.visibilityState==="visible";setBgV(v);if(v){if(!wlr.current)await rwl();if(slr.current?.paused)slr.current.play().catch(()=>{});}};document.addEventListener("visibilitychange",fn);return()=>document.removeEventListener("visibilitychange",fn);},[started,rwl]);
   useEffect(()=>{speechSynthesis.getVoices();},[]);
 
-  function saveConfig(){const asciiOnly=(s)=>s.replace(/[^\x00-\x7F]/g,"").trim();form.groq=asciiOnly(form.groq);form.gemini=asciiOnly(form.gemini);
-    if(!form.groq.trim()){setErr("Groq APIキーを入力");return;}
-    if(!form.gemini.trim()){setErr("Gemini APIキーを入力");return;}
-    const c={groq:form.groq.trim(),gemini:form.gemini.trim(),sys:form.sys.trim()};
-    localStorage.setItem("hf_vc8",JSON.stringify(c));setCfg(c);cr.current=c;setErr("");
+  function saveConfig(){
+    const asciiOnly=(s)=>s.replace(/[^\x00-\x7F]/g,"").trim();
+    const groq=asciiOnly(form.groq);
+    const gemini=asciiOnly(form.gemini);
+    if(!groq){setErr("Groq APIキーを入力");return;}
+    if(!gemini){setErr("Gemini APIキーを入力");return;}
+    const c={
+      groq, gemini,
+      voicevox: form.voicevox.trim().replace(/\/$/,""),
+      speaker: Number(form.speaker) || 3,
+      sys: form.sys.trim()
+    };
+    localStorage.setItem("hf_vc9",JSON.stringify(c));setCfg(c);cr.current=c;setErr("");
   }
 
   const startVAD=useCallback(async()=>{
@@ -159,6 +205,7 @@ function App() {
 
   const doInt=useCallback(()=>{
     if(mr.current!=="speaking")return;
+    if(ar.current){ar.current.pause();ar.current.onended=null;ar.current=null;}
     window.speechSynthesis.cancel();
     utr.current=null;
     setMsgs(m=>m.map(x=>x.now?{...x,now:false,cut:true}:x));
@@ -189,21 +236,47 @@ function App() {
       setMsgs(m=>{const cp=[...m];cp[cp.length-1]={...cp[cp.length-1],text:at,thinking:false,now:true};return cp;});
       sm("speaking");
 
-      // ブラウザ内蔵TTSで読み上げ
-      const synth=window.speechSynthesis;
-      synth.cancel();
-      const u=new SpeechSynthesisUtterance(at);
-      u.lang="ja-JP"; u.rate=1.1; u.pitch=1.05;
-      const vs=synth.getVoices();
-      const jp=vs.find(x=>x.lang.startsWith("ja")&&x.name.toLowerCase().includes("female"))||vs.find(x=>x.lang.startsWith("ja"))||vs[0];
-      if(jp)u.voice=jp;
-      u.onend=()=>{setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));sm("waiting");utr.current=null;};
-      u.onerror=()=>{setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));sm("waiting");utr.current=null;};
-      utr.current=u;
-      synth.speak(u);
+      const onEnd=()=>{ar.current=null;utr.current=null;setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));sm("waiting");};
+
+      // VOICEVOX を試す
+      let useBrowser=false;
+      if(c.voicevox){
+        try{
+          const blob = await voicevoxTTS(at, c.voicevox, c.speaker);
+          const url = URL.createObjectURL(blob);
+          const audio = new Audio(url);
+          ar.current = audio;
+          audio.onended=()=>{URL.revokeObjectURL(url);onEnd();};
+          audio.onerror=()=>{URL.revokeObjectURL(url);setTtsT("browser");doBrowserTTS(at,onEnd);};
+          await audio.play();
+          setTtsT("voicevox");
+        }catch(e){
+          console.warn("VOICEVOX失敗→ブラウザTTS:", e.message);
+          useBrowser=true;
+        }
+      }else{
+        useBrowser=true;
+      }
+
+      if(useBrowser){
+        setTtsT("browser");
+        doBrowserTTS(at,onEnd);
+      }
       setErr("");
     }catch(e){setErr(e.message);setMsgs(m=>m[m.length-1]?.thinking?m.slice(0,-1):m);sm("waiting");}
   },[]);
+
+  const doBrowserTTS=(text,onEnd)=>{
+    const synth=window.speechSynthesis;synth.cancel();
+    const u=new SpeechSynthesisUtterance(text);
+    u.lang="ja-JP"; u.rate=1.1; u.pitch=1.05;
+    const vs=synth.getVoices();
+    const jp=vs.find(x=>x.lang.startsWith("ja")&&x.name.toLowerCase().includes("female"))||vs.find(x=>x.lang.startsWith("ja"))||vs[0];
+    if(jp)u.voice=jp;
+    u.onend=onEnd; u.onerror=onEnd;
+    utr.current=u;
+    synth.speak(u);
+  };
 
   const handleStart=useCallback(async()=>{
     try{const sy=window.speechSynthesis;sy.cancel();const d=new SpeechSynthesisUtterance("");d.volume=0;sy.speak(d);await startVAD();await rwl();ssl();setStarted(true);sm("waiting");}
@@ -215,11 +288,19 @@ function App() {
   if(!cfg) return(<><style>{css}</style><div className="app"><div className="setup">
     <div style={{textAlign:"center",padding:"8px 0 4px"}}><div style={{fontSize:"2rem",marginBottom:8}}>🎙</div>
     <div className="setup-hd">ハンズフリー音声会話</div>
-    <div style={{fontSize:".75rem",color:"#4b5563",marginTop:4}}>APIキー2つだけで動きます</div></div>
+    <div style={{fontSize:".75rem",color:"#4b5563",marginTop:4}}>VOICEVOX対応版</div></div>
     <div className="field"><div className="lbl">Groq API Key（音声認識・無料）</div>
-    <input className="inp" type="password" placeholder="gsk_..." value={form.groq} onChange={e=>setForm(f=>({...f,groq:e.target.value}))}/><div className="hint"><a href="https://console.groq.com" target="_blank">console.groq.com</a> で無料取得</div></div>
+    <input className="inp" type="password" placeholder="gsk_..." value={form.groq} onChange={e=>setForm(f=>({...f,groq:e.target.value}))}/>
+    <div className="hint"><a href="https://console.groq.com" target="_blank">console.groq.com</a> で無料取得</div></div>
     <div className="field"><div className="lbl">Gemini API Key（AI返答）</div>
-    <input className="inp" type="password" placeholder="AIza..." value={form.gemini} onChange={e=>setForm(f=>({...f,gemini:e.target.value}))}/><div className="hint"><a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a> → Get API key</div></div>
+    <input className="inp" type="password" placeholder="AIza..." value={form.gemini} onChange={e=>setForm(f=>({...f,gemini:e.target.value}))}/>
+    <div className="hint"><a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a> → Get API key</div></div>
+    <div className="field"><div className="lbl">VOICEVOX URL（空欄でブラウザ音声）</div>
+    <input className="inp" type="text" placeholder="https://xxx.hf.space" value={form.voicevox} onChange={e=>setForm(f=>({...f,voicevox:e.target.value}))}/></div>
+    <div className="field"><div className="lbl">VOICEVOXキャラクター</div>
+    <select className="inp" value={form.speaker} onChange={e=>setForm(f=>({...f,speaker:e.target.value}))}>
+      {SPEAKERS.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+    </select></div>
     <div className="field"><div className="lbl">AIキャラクター設定</div>
     <textarea className="inp" rows={3} value={form.sys} onChange={e=>setForm(f=>({...f,sys:e.target.value}))} style={{resize:"vertical"}}/></div>
     {err&&<div className="err-box">{err}</div>}
@@ -228,7 +309,8 @@ function App() {
 
   if(!started) return(<><style>{css}</style><div className="ov">
     <div className="oi">🎙</div><div className="ot">ハンズフリー音声会話</div>
-    <div className="od">タップすると起動します。<br/>あとはポケットに入れるだけ。</div>
+    <div className="od">タップすると起動します。<br/>あとはポケットに入れるだけ。<br/><br/>
+    <span style={{color:"#34d399",fontSize:".78rem"}}>✓ VOICEVOX音声対応<br/>✓ 失敗時はブラウザ音声にフォールバック</span></div>
     {err&&<div className="err-box" style={{width:"100%"}}>{err}</div>}
     <button className="ob" onClick={handleStart}>🎤 会話を開始する</button>
     <div style={{fontSize:".72rem",color:"#374151",textAlign:"center"}}>「マイクを許可」を選択してください</div>
@@ -239,15 +321,18 @@ function App() {
       <div className={`pr ${mode}`}><span className="pi">{ICONS[mode]}</span></div>
       <div className={`st ${mode}`}>{STXT[mode]}</div>
       <div className="badges">
-        <span className={`badge ${wl?"ok":"warn"}`}>{wl?"🔒 画面ロック":"⚠ WL"}</span>
-        <span className={`badge ${silOk?"ok":"off"}`}>{silOk?"🔈 無音LP":"○"}</span>
-        <span className={`badge ${bgV?"ok":"warn"}`}>{bgV?"👁 フォア":"💤"}</span>
+        <span className={`badge ${wl?"ok":"warn"}`}>{wl?"🔒":"⚠"}</span>
+        <span className={`badge ${silOk?"ok":"off"}`}>{silOk?"🔈":"○"}</span>
+        <span className={`badge ${bgV?"ok":"warn"}`}>{bgV?"👁":"💤"}</span>
+        <span className={`badge ${ttsT==="voicevox"?"ok":ttsT==="browser"?"warn":"off"}`}>
+          {ttsT==="voicevox"?"🎤 VOICEVOX":ttsT==="browser"?"📱 ブラウザ":"○ TTS待機"}
+        </span>
       </div>
       <div className="vw"><div className="vt"><div className="vf" style={{width:`${vp}%`,background:vol>sens?"#f87171":vol>SPEAK_THR?"#34d399":"#374151"}}/><div className="vh" style={{left:`${tp}%`}}/></div>
       <div className="vl"><span className="vlb">音量</span><span className="vlb">▲割り込み</span></div></div>
     </div>
     <div className="chat">
-      {msgs.length===0&&(<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"#1f2937",fontSize:".83rem",textAlign:"center",lineHeight:2,padding:"0 20px"}}>声を出すと自動で録音が始まります<br/><span style={{fontSize:".72rem"}}>黙ると自動送信 → AI返答 → 自動待機</span></div>)}
+      {msgs.length===0&&(<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"#1f2937",fontSize:".83rem",textAlign:"center",lineHeight:2,padding:"0 20px"}}>声を出すと自動で録音が始まります<br/><span style={{fontSize:".72rem"}}>VOICEVOX初回は起動に数分かかります</span></div>)}
       {msgs.map((m,i)=>(<div className="row" key={i}><div className="rl">{m.role==="user"?"あなた":"AI"}</div>
         <div className={`bb ${m.role}${m.now?" now":""}${m.cut?" cut":""}`}>{m.thinking?<div className="th"><div className="td"/><div className="td"/><div className="td"/></div>:m.text}</div>
         {m.cut&&<div className="cl">⚡ 割り込み</div>}</div>))}
@@ -257,8 +342,8 @@ function App() {
       <div className="sr"><span className="sl">割り込み感度</span><input type="range" className="ss" min={8} max={60} value={sens} onChange={e=>setSens(Number(e.target.value))}/><span className="sl" style={{minWidth:26,textAlign:"right"}}>{sens}</span></div>
       <div className="br">
         <button className="bs red" onClick={()=>{setMsgs([]);hr.current=[];}}>クリア</button>
-        <button className="bs yel" onClick={()=>{window.speechSynthesis.cancel();utr.current=null;setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));sm("waiting");}}>再生停止</button>
-        <button className="bs" onClick={()=>{localStorage.removeItem("hf_vc8");setCfg(null);}}>⚙ 設定</button>
+        <button className="bs yel" onClick={()=>{if(ar.current){ar.current.pause();ar.current=null;}window.speechSynthesis.cancel();utr.current=null;setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));sm("waiting");}}>再生停止</button>
+        <button className="bs" onClick={()=>{localStorage.removeItem("hf_vc9");setCfg(null);}}>⚙ 設定</button>
       </div>
       {err&&<div className="err-box" style={{fontSize:".75rem"}}>{err}</div>}
     </div>
