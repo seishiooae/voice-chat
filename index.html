@@ -9,12 +9,6 @@
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <style>html,body{margin:0;padding:0;height:100%;background:#06090f}</style>
-<script type="module">
-import { Client } from "https://cdn.jsdelivr.net/npm/@gradio/client/+esm";
-window._GradioClient = Client;
-window._gradioReady = true;
-console.log("Gradio client loaded");
-</script>
 </head>
 <body>
 <div id="root"></div>
@@ -23,7 +17,6 @@ const { useState, useRef, useEffect, useCallback } = React;
 
 const GROQ_STT = "https://api.groq.com/openai/v1/audio/transcriptions";
 const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent";
-const SBV2_SPACE = "litagin/Style-Bert-VITS2-JVNV";
 
 const SPEAK_THR=22, SPEAK_FRAMES=8, SILENCE_THR=14, SILENCE_FRAMES=90;
 const INT_THR=25, INT_FRAMES=15, CHECK_MS=16;
@@ -103,77 +96,8 @@ body{background:#06090f;color:#e2e8f0;font-family:'Zen Kaku Gothic New',sans-ser
 const ICONS={waiting:"🎧",recording:"🔴",processing:"⚡",speaking:"🔊",interrupted:"⚡"};
 const STXT={waiting:"声を出すと\n自動で録音が始まります",recording:"録音中\n（黙ると自動送信）",processing:"Gemini 3.1 Pro\n思考中...",speaking:"再生中\n（声で割り込み可）",interrupted:"割り込み検知\n録音中..."};
 
-// ── Gradio TTS（公式Space）+ ブラウザTTSフォールバック ─────
-let gradioClient = null;
-
-async function connectGradio() {
-  if (gradioClient) return gradioClient;
-  if (!window._GradioClient) return null;
-  try {
-    gradioClient = await window._GradioClient.connect(SBV2_SPACE);
-    console.log("Gradio connected to", SBV2_SPACE);
-    return gradioClient;
-  } catch(e) {
-    console.warn("Gradio connect failed:", e.message);
-    return null;
-  }
-}
-
-async function doTTS(text, onEnd) {
-  // 1) Gradio（公式Space）を試す
-  try {
-    const client = await connectGradio();
-    if (client) {
-      const result = await client.predict("/tts_fn", [
-        text, "jvnv-F1-jp", "JP", null,
-        0.2, 0.6, 0.8, 1.0,
-        true, 0.5, "", 0.7, false, "Neutral", 1.0
-      ]);
-      if (result && result.data) {
-        const audioData = result.data[1] || result.data[0];
-        let audioUrl = null;
-        if (typeof audioData === "string") audioUrl = audioData;
-        else if (audioData && audioData.url) audioUrl = audioData.url;
-        else if (audioData && audioData.path) audioUrl = audioData.path;
-
-        if (audioUrl) {
-          const audio = new Audio(audioUrl);
-          audio.onended = onEnd;
-          audio.onerror = () => { console.warn("SBV2 audio error, fallback"); doBrowserTTS(text, onEnd); };
-          await audio.play();
-          return { type: "sbv2", audio };
-        }
-      }
-    }
-  } catch(e) {
-    console.warn("Gradio TTS failed:", e.message, "→ fallback");
-  }
-
-  // 2) フォールバック：ブラウザ内蔵TTS
-  return doBrowserTTS(text, onEnd);
-}
-
-function doBrowserTTS(text, onEnd) {
-  const synth = window.speechSynthesis;
-  synth.cancel();
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang="ja-JP"; u.rate=1.1; u.pitch=1.05;
-  const v = synth.getVoices();
-  const jp = v.find(x=>x.lang.startsWith("ja")&&x.name.toLowerCase().includes("female")) || v.find(x=>x.lang.startsWith("ja")) || v[0];
-  if(jp) u.voice=jp;
-  u.onend=onEnd; u.onerror=onEnd;
-  synth.speak(u);
-  return { type: "browser" };
-}
-
-function stopTTS(ref) {
-  if(!ref) return;
-  if(ref.type==="sbv2" && ref.audio) { ref.audio.pause(); ref.audio.onended=null; }
-  else window.speechSynthesis.cancel();
-}
-
 function App() {
-  const [cfg,setCfg]=useState(()=>{try{return JSON.parse(localStorage.getItem("hf_vc7")||"null")}catch{return null}});
+  const [cfg,setCfg]=useState(()=>{try{return JSON.parse(localStorage.getItem("hf_vc8")||"null")}catch{return null}});
   const [form,setForm]=useState({groq:"",gemini:"",sys:"あなたは親切で会話好きな日本語AIアシスタントです。簡潔に話し言葉で自然な会話をしてください。必ず100文字以内で答えてください。"});
   const [started,setStarted]=useState(false);
   const [mode,setMode]=useState("waiting");
@@ -184,11 +108,10 @@ function App() {
   const [wl,setWl]=useState(false);
   const [silOk,setSilOk]=useState(false);
   const [bgV,setBgV]=useState(true);
-  const [ttsT,setTtsT]=useState("");
 
   const mr=useRef("waiting"),cr=useRef(null),sr2=useRef(INT_THR);
   const hr=useRef([]),vr=useRef(null),rr=useRef(null),ch=useRef([]),er=useRef(null);
-  const wlr=useRef(null),slr=useRef(null),tr=useRef(null);
+  const wlr=useRef(null),slr=useRef(null),utr=useRef(null);
 
   useEffect(()=>{mr.current=mode},[mode]);
   useEffect(()=>{cr.current=cfg},[cfg]);
@@ -201,14 +124,11 @@ function App() {
   useEffect(()=>{if(!started)return;const fn=async()=>{const v=document.visibilityState==="visible";setBgV(v);if(v){if(!wlr.current)await rwl();if(slr.current?.paused)slr.current.play().catch(()=>{});}};document.addEventListener("visibilitychange",fn);return()=>document.removeEventListener("visibilitychange",fn);},[started,rwl]);
   useEffect(()=>{speechSynthesis.getVoices();},[]);
 
-  // 起動時にGradio接続を試みる
-  useEffect(()=>{if(started){connectGradio().then(c=>{if(c)console.log("SBV2 ready");});};},[started]);
-
-  function saveConfig(){
+  function saveConfig(){const asciiOnly=(s)=>s.replace(/[^\x00-\x7F]/g,"").trim();form.groq=asciiOnly(form.groq);form.gemini=asciiOnly(form.gemini);
     if(!form.groq.trim()){setErr("Groq APIキーを入力");return;}
     if(!form.gemini.trim()){setErr("Gemini APIキーを入力");return;}
     const c={groq:form.groq.trim(),gemini:form.gemini.trim(),sys:form.sys.trim()};
-    localStorage.setItem("hf_vc7",JSON.stringify(c));setCfg(c);cr.current=c;setErr("");
+    localStorage.setItem("hf_vc8",JSON.stringify(c));setCfg(c);cr.current=c;setErr("");
   }
 
   const startVAD=useCallback(async()=>{
@@ -239,7 +159,8 @@ function App() {
 
   const doInt=useCallback(()=>{
     if(mr.current!=="speaking")return;
-    stopTTS(tr.current);tr.current=null;
+    window.speechSynthesis.cancel();
+    utr.current=null;
     setMsgs(m=>m.map(x=>x.now?{...x,now:false,cut:true}:x));
     sm("interrupted");
     setTimeout(()=>{ch.current=[];if(rr.current?.state==="inactive"){rr.current.start(100);sm("recording");}},350);
@@ -268,10 +189,18 @@ function App() {
       setMsgs(m=>{const cp=[...m];cp[cp.length-1]={...cp[cp.length-1],text:at,thinking:false,now:true};return cp;});
       sm("speaking");
 
-      const onEnd=()=>{tr.current=null;setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));sm("waiting");};
-      const result = await doTTS(at, onEnd);
-      tr.current = result;
-      setTtsT(result.type);
+      // ブラウザ内蔵TTSで読み上げ
+      const synth=window.speechSynthesis;
+      synth.cancel();
+      const u=new SpeechSynthesisUtterance(at);
+      u.lang="ja-JP"; u.rate=1.1; u.pitch=1.05;
+      const vs=synth.getVoices();
+      const jp=vs.find(x=>x.lang.startsWith("ja")&&x.name.toLowerCase().includes("female"))||vs.find(x=>x.lang.startsWith("ja"))||vs[0];
+      if(jp)u.voice=jp;
+      u.onend=()=>{setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));sm("waiting");utr.current=null;};
+      u.onerror=()=>{setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));sm("waiting");utr.current=null;};
+      utr.current=u;
+      synth.speak(u);
       setErr("");
     }catch(e){setErr(e.message);setMsgs(m=>m[m.length-1]?.thinking?m.slice(0,-1):m);sm("waiting");}
   },[]);
@@ -286,7 +215,7 @@ function App() {
   if(!cfg) return(<><style>{css}</style><div className="app"><div className="setup">
     <div style={{textAlign:"center",padding:"8px 0 4px"}}><div style={{fontSize:"2rem",marginBottom:8}}>🎙</div>
     <div className="setup-hd">ハンズフリー音声会話</div>
-    <div style={{fontSize:".75rem",color:"#4b5563",marginTop:4}}>APIキー2つだけ・Style-Bert-VITS2対応</div></div>
+    <div style={{fontSize:".75rem",color:"#4b5563",marginTop:4}}>APIキー2つだけで動きます</div></div>
     <div className="field"><div className="lbl">Groq API Key（音声認識・無料）</div>
     <input className="inp" type="password" placeholder="gsk_..." value={form.groq} onChange={e=>setForm(f=>({...f,groq:e.target.value}))}/><div className="hint"><a href="https://console.groq.com" target="_blank">console.groq.com</a> で無料取得</div></div>
     <div className="field"><div className="lbl">Gemini API Key（AI返答）</div>
@@ -299,8 +228,7 @@ function App() {
 
   if(!started) return(<><style>{css}</style><div className="ov">
     <div className="oi">🎙</div><div className="ot">ハンズフリー音声会話</div>
-    <div className="od">タップすると起動します。<br/>あとはポケットに入れるだけ。<br/><br/>
-    <span style={{color:"#34d399",fontSize:".78rem"}}>✓ APIキー2つだけ（HF Space不要）<br/>✓ 公式Spaceの高品質音声を使用<br/>✓ 使えない場合はブラウザ音声にフォールバック</span></div>
+    <div className="od">タップすると起動します。<br/>あとはポケットに入れるだけ。</div>
     {err&&<div className="err-box" style={{width:"100%"}}>{err}</div>}
     <button className="ob" onClick={handleStart}>🎤 会話を開始する</button>
     <div style={{fontSize:".72rem",color:"#374151",textAlign:"center"}}>「マイクを許可」を選択してください</div>
@@ -314,13 +242,12 @@ function App() {
         <span className={`badge ${wl?"ok":"warn"}`}>{wl?"🔒 画面ロック":"⚠ WL"}</span>
         <span className={`badge ${silOk?"ok":"off"}`}>{silOk?"🔈 無音LP":"○"}</span>
         <span className={`badge ${bgV?"ok":"warn"}`}>{bgV?"👁 フォア":"💤"}</span>
-        <span className={`badge ${ttsT==="sbv2"?"ok":ttsT==="browser"?"warn":"off"}`}>{ttsT==="sbv2"?"🎤 SBV2":ttsT==="browser"?"📱 ブラウザ":"○ TTS待機"}</span>
       </div>
       <div className="vw"><div className="vt"><div className="vf" style={{width:`${vp}%`,background:vol>sens?"#f87171":vol>SPEAK_THR?"#34d399":"#374151"}}/><div className="vh" style={{left:`${tp}%`}}/></div>
       <div className="vl"><span className="vlb">音量</span><span className="vlb">▲割り込み</span></div></div>
     </div>
     <div className="chat">
-      {msgs.length===0&&(<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"#1f2937",fontSize:".83rem",textAlign:"center",lineHeight:2,padding:"0 20px"}}>声を出すと自動で録音が始まります<br/><span style={{fontSize:".72rem"}}>公式SBV2音声 → ブラウザ音声に自動フォールバック</span></div>)}
+      {msgs.length===0&&(<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"#1f2937",fontSize:".83rem",textAlign:"center",lineHeight:2,padding:"0 20px"}}>声を出すと自動で録音が始まります<br/><span style={{fontSize:".72rem"}}>黙ると自動送信 → AI返答 → 自動待機</span></div>)}
       {msgs.map((m,i)=>(<div className="row" key={i}><div className="rl">{m.role==="user"?"あなた":"AI"}</div>
         <div className={`bb ${m.role}${m.now?" now":""}${m.cut?" cut":""}`}>{m.thinking?<div className="th"><div className="td"/><div className="td"/><div className="td"/></div>:m.text}</div>
         {m.cut&&<div className="cl">⚡ 割り込み</div>}</div>))}
@@ -330,8 +257,8 @@ function App() {
       <div className="sr"><span className="sl">割り込み感度</span><input type="range" className="ss" min={8} max={60} value={sens} onChange={e=>setSens(Number(e.target.value))}/><span className="sl" style={{minWidth:26,textAlign:"right"}}>{sens}</span></div>
       <div className="br">
         <button className="bs red" onClick={()=>{setMsgs([]);hr.current=[];}}>クリア</button>
-        <button className="bs yel" onClick={()=>{stopTTS(tr.current);tr.current=null;setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));sm("waiting");}}>再生停止</button>
-        <button className="bs" onClick={()=>{localStorage.removeItem("hf_vc7");setCfg(null);}}>⚙ 設定</button>
+        <button className="bs yel" onClick={()=>{window.speechSynthesis.cancel();utr.current=null;setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));sm("waiting");}}>再生停止</button>
+        <button className="bs" onClick={()=>{localStorage.removeItem("hf_vc8");setCfg(null);}}>⚙ 設定</button>
       </div>
       {err&&<div className="err-box" style={{fontSize:".75rem"}}>{err}</div>}
     </div>
