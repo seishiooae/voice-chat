@@ -4,20 +4,27 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-capable" content="yes">
 <title>ハンズフリー音声会話</title>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <style>html,body{margin:0;padding:0;height:100%;background:#06090f}</style>
+<script type="module">
+import { Client } from "https://cdn.jsdelivr.net/npm/@gradio/client/+esm";
+window._GradioClient = Client;
+window._gradioReady = true;
+console.log("Gradio client loaded");
+</script>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel">
 const { useState, useRef, useEffect, useCallback } = React;
 
-const GROQ_STT   = "https://api.groq.com/openai/v1/audio/transcriptions";
+const GROQ_STT = "https://api.groq.com/openai/v1/audio/transcriptions";
 const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent";
+const SBV2_SPACE = "litagin/Style-Bert-VITS2-JVNV";
+
 const SPEAK_THR=22, SPEAK_FRAMES=8, SILENCE_THR=14, SILENCE_FRAMES=90;
 const INT_THR=25, INT_FRAMES=15, CHECK_MS=16;
 const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
@@ -26,355 +33,309 @@ const css = `
 @import url('https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@300;400;700&family=Share+Tech+Mono&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overscroll-behavior:none}
-body{background:#06090f;color:#e2e8f0;font-family:'Zen Kaku Gothic New',sans-serif;min-height:100vh}
+body{background:#06090f;color:#e2e8f0;font-family:'Zen Kaku Gothic New',sans-serif}
 .app{max-width:480px;margin:0 auto;min-height:100vh;display:flex;flex-direction:column}
 .setup{flex:1;display:flex;flex-direction:column;gap:16px;padding:20px 18px;overflow-y:auto}
 .setup-hd{font-size:1rem;font-weight:700;color:#c084fc;text-align:center;padding:8px 0}
 .field{display:flex;flex-direction:column;gap:5px}
 .lbl{font-family:'Share Tech Mono',monospace;font-size:.64rem;color:#6b7280;letter-spacing:.1em;text-transform:uppercase}
-.inp{background:rgba(168,85,247,.06);border:1px solid rgba(168,85,247,.2);border-radius:10px;padding:11px 13px;color:#e2e8f0;font-size:.86rem;width:100%;outline:none;transition:border-color .2s}
+.inp{background:rgba(168,85,247,.06);border:1px solid rgba(168,85,247,.2);border-radius:10px;padding:11px 13px;color:#e2e8f0;font-size:.86rem;width:100%;outline:none}
 .inp:focus{border-color:rgba(168,85,247,.55)}
 .hint{font-size:.69rem;color:#4b5563;line-height:1.55}
 .hint a{color:#818cf8;text-decoration:none}
-.btn-go{width:100%;padding:14px;background:linear-gradient(135deg,#7c3aed,#6d28d9);border:none;border-radius:12px;color:#fff;font-size:.95rem;font-family:'Zen Kaku Gothic New',sans-serif;font-weight:700;cursor:pointer;margin-top:4px}
+.btn-go{width:100%;padding:14px;background:linear-gradient(135deg,#7c3aed,#6d28d9);border:none;border-radius:12px;color:#fff;font-size:.95rem;font-weight:700;cursor:pointer;margin-top:4px}
 .btn-go:active{transform:scale(.98);opacity:.85}
 .err-box{background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.22);border-radius:8px;padding:9px 13px;font-size:.78rem;color:#f87171;line-height:1.5}
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden}
-.status-area{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:24px 20px 16px;flex-shrink:0}
-.pulse-ring{width:110px;height:110px;border-radius:50%;display:flex;align-items:center;justify-content:center;transition:all .4s;flex-shrink:0}
-.pulse-ring.waiting{background:rgba(55,65,81,.4);border:3px solid rgba(55,65,81,.6)}
-.pulse-ring.recording{background:rgba(239,68,68,.15);border:3px solid #ef4444;animation:pr 1.4s infinite}
-.pulse-ring.processing{background:rgba(251,191,36,.1);border:3px solid rgba(251,191,36,.5)}
-.pulse-ring.speaking{background:rgba(129,140,248,.12);border:3px solid rgba(129,140,248,.6);animation:ps 2s infinite}
-.pulse-ring.interrupted{background:rgba(239,68,68,.2);border:3px solid #ef4444}
+.sa{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:24px 20px 16px;flex-shrink:0}
+.pr{width:110px;height:110px;border-radius:50%;display:flex;align-items:center;justify-content:center;transition:all .4s}
+.pr.waiting{background:rgba(55,65,81,.4);border:3px solid rgba(55,65,81,.6)}
+.pr.recording{background:rgba(239,68,68,.15);border:3px solid #ef4444;animation:pr 1.4s infinite}
+.pr.processing{background:rgba(251,191,36,.1);border:3px solid rgba(251,191,36,.5)}
+.pr.speaking{background:rgba(129,140,248,.12);border:3px solid rgba(129,140,248,.6);animation:ps 2s infinite}
+.pr.interrupted{background:rgba(239,68,68,.2);border:3px solid #ef4444}
 @keyframes pr{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,.4)}50%{box-shadow:0 0 0 20px rgba(239,68,68,0)}}
 @keyframes ps{0%,100%{box-shadow:0 0 0 0 rgba(129,140,248,.35)}50%{box-shadow:0 0 0 22px rgba(129,140,248,0)}}
-.pulse-icon{font-size:2.8rem}
-.status-text{font-family:'Share Tech Mono',monospace;font-size:.86rem;letter-spacing:.05em;text-align:center;line-height:1.7;white-space:pre-line;transition:color .3s}
-.status-text.waiting{color:#4b5563}
-.status-text.recording{color:#f87171;animation:blink 1s infinite}
-.status-text.processing{color:#fbbf24}
-.status-text.speaking{color:#818cf8}
-.status-text.interrupted{color:#f87171}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:.5}}
+.pi{font-size:2.8rem}
+.st{font-family:'Share Tech Mono',monospace;font-size:.86rem;text-align:center;line-height:1.7;white-space:pre-line}
+.st.waiting{color:#4b5563}.st.recording{color:#f87171;animation:bl 1s infinite}.st.processing{color:#fbbf24}.st.speaking{color:#818cf8}.st.interrupted{color:#f87171}
+@keyframes bl{0%,100%{opacity:1}50%{opacity:.5}}
 .badges{display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
 .badge{font-family:'Share Tech Mono',monospace;font-size:.6rem;padding:3px 8px;border-radius:20px}
 .badge.ok{background:rgba(52,211,153,.12);border:1px solid rgba(52,211,153,.3);color:#34d399}
 .badge.off{background:rgba(55,65,81,.3);border:1px solid rgba(55,65,81,.5);color:#4b5563}
 .badge.warn{background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);color:#fbbf24}
-.vol-wrap{width:220px}
-.vol-track{height:6px;background:rgba(255,255,255,.06);border-radius:3px;position:relative}
-.vol-fill{height:100%;border-radius:3px;transition:width .08s,background .2s;position:absolute;left:0;top:0}
-.vol-thr{position:absolute;top:-3px;height:12px;width:2px;border-radius:1px;background:rgba(248,113,113,.7)}
-.vol-labels{display:flex;justify-content:space-between;margin-top:4px}
-.vol-lbl{font-family:'Share Tech Mono',monospace;font-size:.58rem;color:#374151}
+.vw{width:220px}.vt{height:6px;background:rgba(255,255,255,.06);border-radius:3px;position:relative}
+.vf{height:100%;border-radius:3px;transition:width .08s,background .2s;position:absolute;left:0;top:0}
+.vh{position:absolute;top:-3px;height:12px;width:2px;border-radius:1px;background:rgba(248,113,113,.7)}
+.vl{display:flex;justify-content:space-between;margin-top:4px}
+.vlb{font-family:'Share Tech Mono',monospace;font-size:.58rem;color:#374151}
 .chat{flex:1;overflow-y:auto;padding:0 16px 10px;display:flex;flex-direction:column;gap:10px;-webkit-overflow-scrolling:touch}
 .row{display:flex;flex-direction:column;gap:3px}
-.row-lbl{font-family:'Share Tech Mono',monospace;font-size:.6rem;color:#2d3748;padding:0 2px}
-.bubble{max-width:86%;padding:9px 13px;border-radius:14px;font-size:.88rem;line-height:1.7;word-break:break-word;white-space:pre-wrap}
-.bubble.user{align-self:flex-end;background:rgba(124,58,237,.2);border:1px solid rgba(168,85,247,.25);border-bottom-right-radius:3px;color:#ddd6fe}
-.bubble.ai{align-self:flex-start;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-bottom-left-radius:3px;color:#e2e8f0}
-.bubble.ai.now{border-color:rgba(129,140,248,.5);background:rgba(129,140,248,.07);animation:gb 2s infinite}
-.bubble.ai.cut{border-color:rgba(248,113,113,.25);background:rgba(248,113,113,.04)}
+.rl{font-family:'Share Tech Mono',monospace;font-size:.6rem;color:#2d3748;padding:0 2px}
+.bb{max-width:86%;padding:9px 13px;border-radius:14px;font-size:.88rem;line-height:1.7;word-break:break-word;white-space:pre-wrap}
+.bb.user{align-self:flex-end;background:rgba(124,58,237,.2);border:1px solid rgba(168,85,247,.25);border-bottom-right-radius:3px;color:#ddd6fe}
+.bb.ai{align-self:flex-start;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-bottom-left-radius:3px;color:#e2e8f0}
+.bb.ai.now{border-color:rgba(129,140,248,.5);background:rgba(129,140,248,.07);animation:gb 2s infinite}
+.bb.ai.cut{border-color:rgba(248,113,113,.25);background:rgba(248,113,113,.04)}
 @keyframes gb{0%,100%{border-color:rgba(129,140,248,.4)}50%{border-color:rgba(129,140,248,.8)}}
-.cut-lbl{font-size:.62rem;font-family:'Share Tech Mono',monospace;color:#f87171;opacity:.65;padding:0 3px}
-.thinking{display:flex;gap:5px;align-items:center;padding:2px 0}
+.cl{font-size:.62rem;font-family:'Share Tech Mono',monospace;color:#f87171;opacity:.65;padding:0 3px}
+.th{display:flex;gap:5px;align-items:center;padding:2px 0}
 .td{width:6px;height:6px;border-radius:50%;background:#6b7280;animation:bn .8s infinite}
 .td:nth-child(2){animation-delay:.15s}.td:nth-child(3){animation-delay:.3s}
 @keyframes bn{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
-.bottom{padding:8px 18px 14px;border-top:1px solid rgba(168,85,247,.1);display:flex;flex-direction:column;gap:8px;flex-shrink:0}
-.sens-row{display:flex;align-items:center;gap:8px}
-.sens-lbl{font-family:'Share Tech Mono',monospace;font-size:.62rem;color:#374151;white-space:nowrap}
-.sens-sl{flex:1;accent-color:#a78bfa}
-.btn-row{display:flex;gap:8px;justify-content:center}
-.btn-s{padding:7px 14px;border:1px solid rgba(168,85,247,.2);border-radius:8px;background:transparent;color:#818cf8;font-size:.7rem;font-family:'Share Tech Mono',monospace;cursor:pointer}
-.btn-s:active{background:rgba(168,85,247,.1)}
-.btn-s.red{color:#f87171;border-color:rgba(248,113,113,.2)}
-.btn-s.yellow{color:#fbbf24;border-color:rgba(251,191,36,.2)}
-.overlay{position:fixed;inset:0;background:#06090f;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;padding:32px;z-index:100}
-.overlay-icon{font-size:3rem;opacity:.7}
-.overlay-title{font-size:1.1rem;font-weight:700;color:#c084fc;text-align:center}
-.overlay-desc{font-size:.83rem;color:#6b7280;text-align:center;line-height:1.8}
-.btn-start{padding:16px 36px;background:linear-gradient(135deg,#7c3aed,#6d28d9);border:none;border-radius:14px;color:#fff;font-size:1.1rem;font-family:'Zen Kaku Gothic New',sans-serif;font-weight:700;cursor:pointer}
+.bot{padding:8px 18px 14px;border-top:1px solid rgba(168,85,247,.1);display:flex;flex-direction:column;gap:8px;flex-shrink:0}
+.sr{display:flex;align-items:center;gap:8px}
+.sl{font-family:'Share Tech Mono',monospace;font-size:.62rem;color:#374151;white-space:nowrap}
+.ss{flex:1;accent-color:#a78bfa}
+.br{display:flex;gap:8px;justify-content:center}
+.bs{padding:7px 14px;border:1px solid rgba(168,85,247,.2);border-radius:8px;background:transparent;color:#818cf8;font-size:.7rem;font-family:'Share Tech Mono',monospace;cursor:pointer}
+.bs:active{background:rgba(168,85,247,.1)}
+.bs.red{color:#f87171;border-color:rgba(248,113,113,.2)}
+.bs.yel{color:#fbbf24;border-color:rgba(251,191,36,.2)}
+.ov{position:fixed;inset:0;background:#06090f;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;padding:32px;z-index:100}
+.oi{font-size:3rem;opacity:.7}
+.ot{font-size:1.1rem;font-weight:700;color:#c084fc;text-align:center}
+.od{font-size:.83rem;color:#6b7280;text-align:center;line-height:1.8}
+.ob{padding:16px 36px;background:linear-gradient(135deg,#7c3aed,#6d28d9);border:none;border-radius:14px;color:#fff;font-size:1.1rem;font-weight:700;cursor:pointer}
 `;
 
 const ICONS={waiting:"🎧",recording:"🔴",processing:"⚡",speaking:"🔊",interrupted:"⚡"};
-const STATUS={
-  waiting:"声を出すと\n自動で録音が始まります",
-  recording:"録音中\n（黙ると自動送信）",
-  processing:"Gemini 3.1 Pro\n思考中...",
-  speaking:"再生中\n（声で割り込み可）",
-  interrupted:"割り込み検知\n録音中...",
-};
+const STXT={waiting:"声を出すと\n自動で録音が始まります",recording:"録音中\n（黙ると自動送信）",processing:"Gemini 3.1 Pro\n思考中...",speaking:"再生中\n（声で割り込み可）",interrupted:"割り込み検知\n録音中..."};
 
-// ── ブラウザ内蔵TTS（Web Speech API）──────────────────────
-function speakText(text, onEnd, onInterrupted) {
-  return new Promise((resolve) => {
-    const synth = window.speechSynthesis;
-    synth.cancel(); // 前の発話をキャンセル
+// ── Gradio TTS（公式Space）+ ブラウザTTSフォールバック ─────
+let gradioClient = null;
 
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.lang = "ja-JP";
-    utter.rate = 1.1;
-    utter.pitch = 1.05;
+async function connectGradio() {
+  if (gradioClient) return gradioClient;
+  if (!window._GradioClient) return null;
+  try {
+    gradioClient = await window._GradioClient.connect(SBV2_SPACE);
+    console.log("Gradio connected to", SBV2_SPACE);
+    return gradioClient;
+  } catch(e) {
+    console.warn("Gradio connect failed:", e.message);
+    return null;
+  }
+}
 
-    // 日本語の女性音声を探す
-    const voices = synth.getVoices();
-    const jpVoice = voices.find(v => v.lang.startsWith("ja") && v.name.includes("Female"))
-                 || voices.find(v => v.lang.startsWith("ja"))
-                 || voices[0];
-    if (jpVoice) utter.voice = jpVoice;
+async function doTTS(text, onEnd) {
+  // 1) Gradio（公式Space）を試す
+  try {
+    const client = await connectGradio();
+    if (client) {
+      const result = await client.predict("/tts_fn", [
+        text, "jvnv-F1-jp", "JP", null,
+        0.2, 0.6, 0.8, 1.0,
+        true, 0.5, "", 0.7, false, "Neutral", 1.0
+      ]);
+      if (result && result.data) {
+        const audioData = result.data[1] || result.data[0];
+        let audioUrl = null;
+        if (typeof audioData === "string") audioUrl = audioData;
+        else if (audioData && audioData.url) audioUrl = audioData.url;
+        else if (audioData && audioData.path) audioUrl = audioData.path;
 
-    utter.onend = () => { if (onEnd) onEnd(); resolve(); };
-    utter.onerror = () => { if (onEnd) onEnd(); resolve(); };
+        if (audioUrl) {
+          const audio = new Audio(audioUrl);
+          audio.onended = onEnd;
+          audio.onerror = () => { console.warn("SBV2 audio error, fallback"); doBrowserTTS(text, onEnd); };
+          await audio.play();
+          return { type: "sbv2", audio };
+        }
+      }
+    }
+  } catch(e) {
+    console.warn("Gradio TTS failed:", e.message, "→ fallback");
+  }
 
-    synth.speak(utter);
-    resolve(utter); // utteranceを返す（割り込み時にcancel用）
-  });
+  // 2) フォールバック：ブラウザ内蔵TTS
+  return doBrowserTTS(text, onEnd);
+}
+
+function doBrowserTTS(text, onEnd) {
+  const synth = window.speechSynthesis;
+  synth.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang="ja-JP"; u.rate=1.1; u.pitch=1.05;
+  const v = synth.getVoices();
+  const jp = v.find(x=>x.lang.startsWith("ja")&&x.name.toLowerCase().includes("female")) || v.find(x=>x.lang.startsWith("ja")) || v[0];
+  if(jp) u.voice=jp;
+  u.onend=onEnd; u.onerror=onEnd;
+  synth.speak(u);
+  return { type: "browser" };
+}
+
+function stopTTS(ref) {
+  if(!ref) return;
+  if(ref.type==="sbv2" && ref.audio) { ref.audio.pause(); ref.audio.onended=null; }
+  else window.speechSynthesis.cancel();
 }
 
 function App() {
-  const [cfg,setCfg]         = useState(()=>{try{return JSON.parse(localStorage.getItem("hf_vc5")||"null")}catch{return null}});
-  const [form,setForm]       = useState({groq:"",gemini:"",sys:"あなたは親切で会話好きな日本語AIアシスタントです。簡潔に話し言葉で自然な会話をしてください。必ず100文字以内で答えてください。"});
-  const [started,setStarted] = useState(false);
-  const [mode,setMode]       = useState("waiting");
-  const [msgs,setMsgs]       = useState([]);
-  const [err,setErr]         = useState("");
-  const [vol,setVol]         = useState(0);
-  const [sens,setSens]       = useState(INT_THR);
-  const [wl,setWl]           = useState(false);
-  const [silOk,setSilOk]     = useState(false);
-  const [bgVis,setBgVis]     = useState(true);
+  const [cfg,setCfg]=useState(()=>{try{return JSON.parse(localStorage.getItem("hf_vc7")||"null")}catch{return null}});
+  const [form,setForm]=useState({groq:"",gemini:"",sys:"あなたは親切で会話好きな日本語AIアシスタントです。簡潔に話し言葉で自然な会話をしてください。必ず100文字以内で答えてください。"});
+  const [started,setStarted]=useState(false);
+  const [mode,setMode]=useState("waiting");
+  const [msgs,setMsgs]=useState([]);
+  const [err,setErr]=useState("");
+  const [vol,setVol]=useState(0);
+  const [sens,setSens]=useState(INT_THR);
+  const [wl,setWl]=useState(false);
+  const [silOk,setSilOk]=useState(false);
+  const [bgV,setBgV]=useState(true);
+  const [ttsT,setTtsT]=useState("");
 
-  const modeRef=useRef("waiting"), cfgRef=useRef(null), sensRef=useRef(INT_THR);
-  const histRef=useRef([]), vadRef=useRef(null), recRef=useRef(null);
-  const chunksRef=useRef([]), endRef=useRef(null);
-  const wlRef=useRef(null), silRef=useRef(null);
+  const mr=useRef("waiting"),cr=useRef(null),sr2=useRef(INT_THR);
+  const hr=useRef([]),vr=useRef(null),rr=useRef(null),ch=useRef([]),er=useRef(null);
+  const wlr=useRef(null),slr=useRef(null),tr=useRef(null);
 
-  useEffect(()=>{modeRef.current=mode},[mode]);
-  useEffect(()=>{cfgRef.current=cfg},[cfg]);
-  useEffect(()=>{sensRef.current=sens},[sens]);
-  useEffect(()=>{endRef.current?.scrollIntoView({behavior:"smooth"})},[msgs]);
+  useEffect(()=>{mr.current=mode},[mode]);
+  useEffect(()=>{cr.current=cfg},[cfg]);
+  useEffect(()=>{sr2.current=sens},[sens]);
+  useEffect(()=>{er.current?.scrollIntoView({behavior:"smooth"})},[msgs]);
 
-  const setMode2=(m)=>{setMode(m);modeRef.current=m;};
-
-  // Wake Lock
-  const reqWL=useCallback(async()=>{
-    try{if(!("wakeLock" in navigator))return;const s=await navigator.wakeLock.request("screen");wlRef.current=s;setWl(true);s.addEventListener("release",()=>{setWl(false);wlRef.current=null;});}catch(e){}
-  },[]);
-  // 無音ループ
-  const startSil=useCallback(()=>{
-    if(silRef.current)return;const a=new Audio(SILENT_WAV);a.loop=true;a.volume=0.001;
-    a.play().then(()=>{silRef.current=a;setSilOk(true);}).catch(()=>{});
-  },[]);
-  // Visibility
-  useEffect(()=>{
-    if(!started)return;
-    const fn=async()=>{const v=document.visibilityState==="visible";setBgVis(v);if(v){if(!wlRef.current)await reqWL();if(silRef.current?.paused)silRef.current.play().catch(()=>{});}};
-    document.addEventListener("visibilitychange",fn);return()=>document.removeEventListener("visibilitychange",fn);
-  },[started,reqWL]);
-  // 音声リスト読み込み
+  const sm=(m)=>{setMode(m);mr.current=m;};
+  const rwl=useCallback(async()=>{try{if(!("wakeLock" in navigator))return;const s=await navigator.wakeLock.request("screen");wlr.current=s;setWl(true);s.addEventListener("release",()=>{setWl(false);wlr.current=null;});}catch(e){}},[]);
+  const ssl=useCallback(()=>{if(slr.current)return;const a=new Audio(SILENT_WAV);a.loop=true;a.volume=0.001;a.play().then(()=>{slr.current=a;setSilOk(true);}).catch(()=>{});},[]);
+  useEffect(()=>{if(!started)return;const fn=async()=>{const v=document.visibilityState==="visible";setBgV(v);if(v){if(!wlr.current)await rwl();if(slr.current?.paused)slr.current.play().catch(()=>{});}};document.addEventListener("visibilitychange",fn);return()=>document.removeEventListener("visibilitychange",fn);},[started,rwl]);
   useEffect(()=>{speechSynthesis.getVoices();},[]);
+
+  // 起動時にGradio接続を試みる
+  useEffect(()=>{if(started){connectGradio().then(c=>{if(c)console.log("SBV2 ready");});};},[started]);
 
   function saveConfig(){
     if(!form.groq.trim()){setErr("Groq APIキーを入力");return;}
     if(!form.gemini.trim()){setErr("Gemini APIキーを入力");return;}
     const c={groq:form.groq.trim(),gemini:form.gemini.trim(),sys:form.sys.trim()};
-    localStorage.setItem("hf_vc5",JSON.stringify(c));
-    setCfg(c);cfgRef.current=c;setErr("");
+    localStorage.setItem("hf_vc7",JSON.stringify(c));setCfg(c);cr.current=c;setErr("");
   }
 
-  // VADループ
   const startVAD=useCallback(async()=>{
-    if(vadRef.current)return;
+    if(vr.current)return;
     const stream=await navigator.mediaDevices.getUserMedia({audio:true});
     const ctx=new(window.AudioContext||window.webkitAudioContext)();
     const src=ctx.createMediaStreamSource(stream);
     const an=ctx.createAnalyser();an.fftSize=512;src.connect(an);
     const data=new Uint8Array(an.frequencyBinCount);
     const opts=MediaRecorder.isTypeSupported("audio/webm;codecs=opus")?{mimeType:"audio/webm;codecs=opus"}:MediaRecorder.isTypeSupported("audio/webm")?{mimeType:"audio/webm"}:{};
-    const rec=new MediaRecorder(stream,opts);recRef.current=rec;
-    rec.ondataavailable=e=>{if(e.data.size>0)chunksRef.current.push(e.data);};
-    rec.onstop=()=>runPipeline(rec.mimeType||"audio/webm");
-    let sc=0,sic=0,ic=0,lt=0,isRec=false;
+    const rec=new MediaRecorder(stream,opts);rr.current=rec;
+    rec.ondataavailable=e=>{if(e.data.size>0)ch.current.push(e.data);};
+    rec.onstop=()=>runPipe(rec.mimeType||"audio/webm");
+    let sc=0,sic=0,ic=0,lt=0,isR=false;
     const loop=(ts)=>{
-      if(ts-lt<CHECK_MS){vadRef.current.raf=requestAnimationFrame(loop);return;}
+      if(ts-lt<CHECK_MS){vr.current.raf=requestAnimationFrame(loop);return;}
       lt=ts;an.getByteFrequencyData(data);
       const avg=data.reduce((a,b)=>a+b,0)/data.length;setVol(avg);
-      const m=modeRef.current;
-      if(m==="speaking"){
-        if(avg>sensRef.current){ic++;if(ic>=INT_FRAMES){ic=0;doInterrupt();}}else ic=0;sc=0;sic=0;
-      }else if(m==="waiting"){
-        ic=0;if(avg>SPEAK_THR){sc++;if(sc>=SPEAK_FRAMES&&!isRec){isRec=true;sic=0;chunksRef.current=[];rec.start(100);setMode2("recording");}}else sc=0;
-      }else if(m==="recording"){
-        ic=0;if(avg<SILENCE_THR){sic++;if(sic>=SILENCE_FRAMES){sic=0;sc=0;isRec=false;rec.stop();setMode2("processing");}}else sic=0;
-      }else{sc=0;sic=0;ic=0;}
-      vadRef.current.raf=requestAnimationFrame(loop);
+      const m=mr.current;
+      if(m==="speaking"){if(avg>sr2.current){ic++;if(ic>=INT_FRAMES){ic=0;doInt();}}else ic=0;sc=0;sic=0;}
+      else if(m==="waiting"){ic=0;if(avg>SPEAK_THR){sc++;if(sc>=SPEAK_FRAMES&&!isR){isR=true;sic=0;ch.current=[];rec.start(100);sm("recording");}}else sc=0;}
+      else if(m==="recording"){ic=0;if(avg<SILENCE_THR){sic++;if(sic>=SILENCE_FRAMES){sic=0;sc=0;isR=false;rec.stop();sm("processing");}}else sic=0;}
+      else{sc=0;sic=0;ic=0;}
+      vr.current.raf=requestAnimationFrame(loop);
     };
-    vadRef.current={ctx,stream,an,raf:requestAnimationFrame(loop)};
+    vr.current={ctx,stream,an,raf:requestAnimationFrame(loop)};
   },[]);
 
-  // 割り込み
-  const doInterrupt=useCallback(()=>{
-    if(modeRef.current!=="speaking")return;
-    // ブラウザTTSを停止
-    window.speechSynthesis.cancel();
+  const doInt=useCallback(()=>{
+    if(mr.current!=="speaking")return;
+    stopTTS(tr.current);tr.current=null;
     setMsgs(m=>m.map(x=>x.now?{...x,now:false,cut:true}:x));
-    setMode2("interrupted");
-    setTimeout(()=>{chunksRef.current=[];if(recRef.current?.state==="inactive"){recRef.current.start(100);setMode2("recording");}},350);
+    sm("interrupted");
+    setTimeout(()=>{ch.current=[];if(rr.current?.state==="inactive"){rr.current.start(100);sm("recording");}},350);
   },[]);
 
-  // パイプライン
-  const runPipeline=useCallback(async(mime)=>{
-    const c=cfgRef.current;if(!c)return;
+  const runPipe=useCallback(async(mime)=>{
+    const c=cr.current;if(!c)return;
     try{
       const ext=mime.includes("mp4")?"mp4":mime.includes("ogg")?"ogg":"webm";
-      const blob=new Blob(chunksRef.current,{type:mime});
-      if(blob.size<1000){setMode2("waiting");return;}
-      const fd=new FormData();fd.append("file",blob,`rec.${ext}`);
+      const blob=new Blob(ch.current,{type:mime});
+      if(blob.size<1000){sm("waiting");return;}
+      const fd=new FormData();fd.append("file",blob,`r.${ext}`);
       fd.append("model","whisper-large-v3-turbo");fd.append("language","ja");fd.append("response_format","text");
       const r1=await fetch(GROQ_STT,{method:"POST",headers:{Authorization:`Bearer ${c.groq}`},body:fd});
       if(!r1.ok)throw new Error(`STT: ${r1.status}`);
-      const userText=(await r1.text()).trim();
-      if(!userText||userText.length<2){setMode2("waiting");return;}
-
-      setMsgs(m=>[...m,{role:"user",text:userText}]);
+      const ut=(await r1.text()).trim();
+      if(!ut||ut.length<2){sm("waiting");return;}
+      setMsgs(m=>[...m,{role:"user",text:ut}]);
       setMsgs(m=>[...m,{role:"ai",text:"",thinking:true}]);
-
-      histRef.current.push({role:"user",parts:[{text:userText}]});
-      const r2=await fetch(`${GEMINI_URL}?key=${c.gemini}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({system_instruction:{parts:[{text:c.sys}]},contents:histRef.current})});
+      hr.current.push({role:"user",parts:[{text:ut}]});
+      const r2=await fetch(`${GEMINI_URL}?key=${c.gemini}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({system_instruction:{parts:[{text:c.sys}]},contents:hr.current})});
       if(!r2.ok){const j=await r2.json().catch(()=>({}));throw new Error(`Gemini: ${j.error?.message||r2.status}`);}
       const g=await r2.json();
-      const aiText=g.candidates?.[0]?.content?.parts?.[0]?.text||"（返答なし）";
-      histRef.current.push({role:"model",parts:[{text:aiText}]});
+      const at=g.candidates?.[0]?.content?.parts?.[0]?.text||"（返答なし）";
+      hr.current.push({role:"model",parts:[{text:at}]});
+      setMsgs(m=>{const cp=[...m];cp[cp.length-1]={...cp[cp.length-1],text:at,thinking:false,now:true};return cp;});
+      sm("speaking");
 
-      setMsgs(m=>{const cp=[...m];cp[cp.length-1]={...cp[cp.length-1],text:aiText,thinking:false,now:true};return cp;});
-      setMode2("speaking");
-
-      // ── ブラウザ内蔵TTSで読み上げ ──
-      const synth=window.speechSynthesis;
-      synth.cancel();
-      const utter=new SpeechSynthesisUtterance(aiText);
-      utter.lang="ja-JP";utter.rate=1.1;utter.pitch=1.05;
-      const voices=synth.getVoices();
-      const jpV=voices.find(v=>v.lang.startsWith("ja")&&v.name.toLowerCase().includes("female"))
-              ||voices.find(v=>v.lang.startsWith("ja"))||voices[0];
-      if(jpV)utter.voice=jpV;
-
-      utter.onend=()=>{setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));setMode2("waiting");};
-      utter.onerror=()=>{setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));setMode2("waiting");};
-      synth.speak(utter);
+      const onEnd=()=>{tr.current=null;setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));sm("waiting");};
+      const result = await doTTS(at, onEnd);
+      tr.current = result;
+      setTtsT(result.type);
       setErr("");
-    }catch(e){setErr(e.message);setMsgs(m=>m[m.length-1]?.thinking?m.slice(0,-1):m);setMode2("waiting");}
+    }catch(e){setErr(e.message);setMsgs(m=>m[m.length-1]?.thinking?m.slice(0,-1):m);sm("waiting");}
   },[]);
 
   const handleStart=useCallback(async()=>{
-    try{
-      // 音声リスト読み込みのために一度空の発話
-      const synth=window.speechSynthesis;
-      synth.cancel();
-      const dummy=new SpeechSynthesisUtterance("");
-      dummy.volume=0;synth.speak(dummy);
-      await startVAD();await reqWL();startSil();setStarted(true);setMode2("waiting");
-    }catch(e){setErr("マイクへのアクセスが拒否されました");}
-  },[startVAD,reqWL,startSil]);
+    try{const sy=window.speechSynthesis;sy.cancel();const d=new SpeechSynthesisUtterance("");d.volume=0;sy.speak(d);await startVAD();await rwl();ssl();setStarted(true);sm("waiting");}
+    catch(e){setErr("マイクへのアクセスが拒否されました");}
+  },[startVAD,rwl,ssl]);
 
-  const volPct=Math.min(100,(vol/255)*100);
-  const thrPct=Math.min(100,(sens/255)*100);
+  const vp=Math.min(100,(vol/255)*100),tp=Math.min(100,(sens/255)*100);
 
-  // 設定画面（HF Space URL不要！）
-  if(!cfg) return (
-    <><style>{css}</style>
-    <div className="app"><div className="setup">
-      <div style={{textAlign:"center",padding:"8px 0 4px"}}>
-        <div style={{fontSize:"2rem",marginBottom:8}}>🎙</div>
-        <div className="setup-hd">ハンズフリー音声会話</div>
-        <div style={{fontSize:".75rem",color:"#4b5563",marginTop:4}}>APIキー2つだけで動きます</div>
-      </div>
-      <div className="field">
-        <div className="lbl">Groq API Key（音声認識・無料）</div>
-        <input className="inp" type="password" placeholder="gsk_..." value={form.groq} onChange={e=>setForm(f=>({...f,groq:e.target.value}))}/>
-        <div className="hint"><a href="https://console.groq.com" target="_blank">console.groq.com</a> で無料取得</div>
-      </div>
-      <div className="field">
-        <div className="lbl">Gemini API Key（AI返答）</div>
-        <input className="inp" type="password" placeholder="AIza..." value={form.gemini} onChange={e=>setForm(f=>({...f,gemini:e.target.value}))}/>
-        <div className="hint"><a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a> → Get API key</div>
-      </div>
-      <div className="field">
-        <div className="lbl">AIキャラクター設定</div>
-        <textarea className="inp" rows={3} value={form.sys} onChange={e=>setForm(f=>({...f,sys:e.target.value}))} style={{resize:"vertical"}}/>
-      </div>
-      {err&&<div className="err-box">{err}</div>}
-      <button className="btn-go" onClick={saveConfig}>設定完了 →</button>
-    </div></div></>
-  );
+  if(!cfg) return(<><style>{css}</style><div className="app"><div className="setup">
+    <div style={{textAlign:"center",padding:"8px 0 4px"}}><div style={{fontSize:"2rem",marginBottom:8}}>🎙</div>
+    <div className="setup-hd">ハンズフリー音声会話</div>
+    <div style={{fontSize:".75rem",color:"#4b5563",marginTop:4}}>APIキー2つだけ・Style-Bert-VITS2対応</div></div>
+    <div className="field"><div className="lbl">Groq API Key（音声認識・無料）</div>
+    <input className="inp" type="password" placeholder="gsk_..." value={form.groq} onChange={e=>setForm(f=>({...f,groq:e.target.value}))}/><div className="hint"><a href="https://console.groq.com" target="_blank">console.groq.com</a> で無料取得</div></div>
+    <div className="field"><div className="lbl">Gemini API Key（AI返答）</div>
+    <input className="inp" type="password" placeholder="AIza..." value={form.gemini} onChange={e=>setForm(f=>({...f,gemini:e.target.value}))}/><div className="hint"><a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a> → Get API key</div></div>
+    <div className="field"><div className="lbl">AIキャラクター設定</div>
+    <textarea className="inp" rows={3} value={form.sys} onChange={e=>setForm(f=>({...f,sys:e.target.value}))} style={{resize:"vertical"}}/></div>
+    {err&&<div className="err-box">{err}</div>}
+    <button className="btn-go" onClick={saveConfig}>設定完了 →</button>
+  </div></div></>);
 
-  if(!started) return (
-    <><style>{css}</style>
-    <div className="overlay">
-      <div className="overlay-icon">🎙</div>
-      <div className="overlay-title">ハンズフリー音声会話</div>
-      <div className="overlay-desc">
-        タップすると起動します。<br/>あとはポケットに入れるだけ。<br/><br/>
-        <span style={{color:"#34d399",fontSize:".78rem"}}>
-          ✓ HF Space不要・ブラウザ内蔵音声で動作<br/>
-          ✓ APIキー2つだけ（Groq + Gemini）
-        </span>
-      </div>
-      {err&&<div className="err-box" style={{width:"100%"}}>{err}</div>}
-      <button className="btn-start" onClick={handleStart}>🎤 会話を開始する</button>
-      <div style={{fontSize:".72rem",color:"#374151",textAlign:"center"}}>「マイクを許可」を選択してください</div>
-    </div></>
-  );
+  if(!started) return(<><style>{css}</style><div className="ov">
+    <div className="oi">🎙</div><div className="ot">ハンズフリー音声会話</div>
+    <div className="od">タップすると起動します。<br/>あとはポケットに入れるだけ。<br/><br/>
+    <span style={{color:"#34d399",fontSize:".78rem"}}>✓ APIキー2つだけ（HF Space不要）<br/>✓ 公式Spaceの高品質音声を使用<br/>✓ 使えない場合はブラウザ音声にフォールバック</span></div>
+    {err&&<div className="err-box" style={{width:"100%"}}>{err}</div>}
+    <button className="ob" onClick={handleStart}>🎤 会話を開始する</button>
+    <div style={{fontSize:".72rem",color:"#374151",textAlign:"center"}}>「マイクを許可」を選択してください</div>
+  </div></>);
 
-  return (
-    <><style>{css}</style>
-    <div className="app"><div className="main">
-      <div className="status-area">
-        <div className={`pulse-ring ${mode}`}><span className="pulse-icon">{ICONS[mode]}</span></div>
-        <div className={`status-text ${mode}`}>{STATUS[mode]}</div>
-        <div className="badges">
-          <span className={`badge ${wl?"ok":"warn"}`}>{wl?"🔒 画面ロック":"⚠ WL未取得"}</span>
-          <span className={`badge ${silOk?"ok":"off"}`}>{silOk?"🔈 無音ループ":"○ 停止"}</span>
-          <span className={`badge ${bgVis?"ok":"warn"}`}>{bgVis?"👁 フォア":"💤 バック"}</span>
-        </div>
-        <div className="vol-wrap">
-          <div className="vol-track">
-            <div className="vol-fill" style={{width:`${volPct}%`,background:vol>sens?"#f87171":vol>SPEAK_THR?"#34d399":"#374151"}}/>
-            <div className="vol-thr" style={{left:`${thrPct}%`}}/>
-          </div>
-          <div className="vol-labels"><span className="vol-lbl">音量</span><span className="vol-lbl">▲割り込み</span></div>
-        </div>
+  return(<><style>{css}</style><div className="app"><div className="main">
+    <div className="sa">
+      <div className={`pr ${mode}`}><span className="pi">{ICONS[mode]}</span></div>
+      <div className={`st ${mode}`}>{STXT[mode]}</div>
+      <div className="badges">
+        <span className={`badge ${wl?"ok":"warn"}`}>{wl?"🔒 画面ロック":"⚠ WL"}</span>
+        <span className={`badge ${silOk?"ok":"off"}`}>{silOk?"🔈 無音LP":"○"}</span>
+        <span className={`badge ${bgV?"ok":"warn"}`}>{bgV?"👁 フォア":"💤"}</span>
+        <span className={`badge ${ttsT==="sbv2"?"ok":ttsT==="browser"?"warn":"off"}`}>{ttsT==="sbv2"?"🎤 SBV2":ttsT==="browser"?"📱 ブラウザ":"○ TTS待機"}</span>
       </div>
-      <div className="chat">
-        {msgs.length===0&&(<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"#1f2937",fontSize:".83rem",textAlign:"center",lineHeight:2,padding:"0 20px"}}>声を出すと自動で録音が始まります<br/><span style={{fontSize:".72rem"}}>黙ると自動送信 → AI返答 → 自動待機</span></div>)}
-        {msgs.map((m,i)=>(
-          <div className="row" key={i}>
-            <div className="row-lbl">{m.role==="user"?"あなた":"AI"}</div>
-            <div className={`bubble ${m.role}${m.now?" now":""}${m.cut?" cut":""}`}>
-              {m.thinking?<div className="thinking"><div className="td"/><div className="td"/><div className="td"/></div>:m.text}
-            </div>
-            {m.cut&&<div className="cut-lbl">⚡ 割り込み</div>}
-          </div>
-        ))}
-        <div ref={endRef}/>
+      <div className="vw"><div className="vt"><div className="vf" style={{width:`${vp}%`,background:vol>sens?"#f87171":vol>SPEAK_THR?"#34d399":"#374151"}}/><div className="vh" style={{left:`${tp}%`}}/></div>
+      <div className="vl"><span className="vlb">音量</span><span className="vlb">▲割り込み</span></div></div>
+    </div>
+    <div className="chat">
+      {msgs.length===0&&(<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"#1f2937",fontSize:".83rem",textAlign:"center",lineHeight:2,padding:"0 20px"}}>声を出すと自動で録音が始まります<br/><span style={{fontSize:".72rem"}}>公式SBV2音声 → ブラウザ音声に自動フォールバック</span></div>)}
+      {msgs.map((m,i)=>(<div className="row" key={i}><div className="rl">{m.role==="user"?"あなた":"AI"}</div>
+        <div className={`bb ${m.role}${m.now?" now":""}${m.cut?" cut":""}`}>{m.thinking?<div className="th"><div className="td"/><div className="td"/><div className="td"/></div>:m.text}</div>
+        {m.cut&&<div className="cl">⚡ 割り込み</div>}</div>))}
+      <div ref={er}/>
+    </div>
+    <div className="bot">
+      <div className="sr"><span className="sl">割り込み感度</span><input type="range" className="ss" min={8} max={60} value={sens} onChange={e=>setSens(Number(e.target.value))}/><span className="sl" style={{minWidth:26,textAlign:"right"}}>{sens}</span></div>
+      <div className="br">
+        <button className="bs red" onClick={()=>{setMsgs([]);hr.current=[];}}>クリア</button>
+        <button className="bs yel" onClick={()=>{stopTTS(tr.current);tr.current=null;setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));sm("waiting");}}>再生停止</button>
+        <button className="bs" onClick={()=>{localStorage.removeItem("hf_vc7");setCfg(null);}}>⚙ 設定</button>
       </div>
-      <div className="bottom">
-        <div className="sens-row">
-          <span className="sens-lbl">割り込み感度</span>
-          <input type="range" className="sens-sl" min={8} max={60} value={sens} onChange={e=>setSens(Number(e.target.value))}/>
-          <span className="sens-lbl" style={{minWidth:26,textAlign:"right"}}>{sens}</span>
-        </div>
-        <div className="btn-row">
-          <button className="btn-s red" onClick={()=>{setMsgs([]);histRef.current=[];}}>クリア</button>
-          <button className="btn-s yellow" onClick={()=>{window.speechSynthesis.cancel();setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));setMode2("waiting");}}>再生停止</button>
-          <button className="btn-s" onClick={()=>{localStorage.removeItem("hf_vc5");setCfg(null);}}>⚙ 設定</button>
-        </div>
-        {err&&<div className="err-box" style={{fontSize:".75rem"}}>{err}</div>}
-      </div>
-    </div></div></>
-  );
+      {err&&<div className="err-box" style={{fontSize:".75rem"}}>{err}</div>}
+    </div>
+  </div></div></>);
 }
 const root=ReactDOM.createRoot(document.getElementById("root"));
 root.render(<App/>);
