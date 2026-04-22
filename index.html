@@ -134,7 +134,7 @@ async function voicevoxTTS(text, baseUrl, speaker, speed=1.0) {
 }
 
 function App() {
-  const [cfg,setCfg]=useState(()=>{try{return JSON.parse(localStorage.getItem("hf_vc11")||"null")}catch{return null}});
+  const [cfg,setCfg]=useState(()=>{try{return JSON.parse(localStorage.getItem("hf_vc12")||"null")}catch{return null}});
   const [form,setForm]=useState({
     groq:"",
     gemini:"",
@@ -184,7 +184,7 @@ function App() {
       model: form.model || "gemini-3.1-pro-preview",
       sys: form.sys.trim()
     };
-    localStorage.setItem("hf_vc11",JSON.stringify(c));setCfg(c);cr.current=c;setErr("");
+    localStorage.setItem("hf_vc12",JSON.stringify(c));setCfg(c);cr.current=c;setErr("");
   }
 
   const startVAD=useCallback(async()=>{
@@ -225,70 +225,93 @@ function App() {
 
   const runPipe=useCallback(async(mime)=>{
     const c=cr.current;if(!c)return;
+    let step="start";
+    // 全体の安全タイマー: 120秒で強制復帰
+    const safetyTimer=setTimeout(()=>{setErr(`タイムアウト（${step}で停止）`);setMsgs(m=>m[m.length-1]?.thinking?m.slice(0,-1):m);sm("waiting");},120000);
     try{
       const ext=mime.includes("mp4")?"mp4":mime.includes("ogg")?"ogg":"webm";
       const blob=new Blob(ch.current,{type:mime});
-      if(blob.size<1000){sm("waiting");return;}
+      if(blob.size<1000){clearTimeout(safetyTimer);sm("waiting");return;}
+
+      // ステップ1: Groq STT
+      step="STT送信";
       const fd=new FormData();fd.append("file",blob,`r.${ext}`);
       fd.append("model","whisper-large-v3-turbo");fd.append("language","ja");fd.append("response_format","text");
-
-      // Groq STT（15秒タイムアウト）
       const ac1=new AbortController();
       const t1=setTimeout(()=>ac1.abort(),15000);
       const r1=await fetch(GROQ_STT,{method:"POST",headers:{Authorization:`Bearer ${c.groq}`},body:fd,signal:ac1.signal});
       clearTimeout(t1);
       if(!r1.ok)throw new Error(`STT: ${r1.status}`);
       const ut=(await r1.text()).trim();
-      if(!ut||ut.length<2){sm("waiting");return;}
+      if(!ut||ut.length<2){clearTimeout(safetyTimer);sm("waiting");return;}
+
+      step="STT完了";
       setMsgs(m=>[...m,{role:"user",text:ut}]);
       setMsgs(m=>[...m,{role:"ai",text:"",thinking:true}]);
       hr.current.push({role:"user",parts:[{text:ut}]});
 
-      // 会話履歴を最新20件に制限（長すぎるとGeminiがタイムアウトする）
-      if(hr.current.length>20) hr.current=hr.current.slice(-20);
+      // 会話履歴を最新10件に制限
+      if(hr.current.length>10) hr.current=hr.current.slice(-10);
 
-      // Gemini（60秒タイムアウト）
+      // ステップ2: Gemini API
+      step="Gemini送信";
       const ac2=new AbortController();
-      const t2=setTimeout(()=>ac2.abort(),60000);
+      const t2=setTimeout(()=>ac2.abort(),90000);
       const geminiUrl=`${GEMINI_BASE}${c.model}:generateContent?key=${c.gemini}`;
-      const r2=await fetch(geminiUrl,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({system_instruction:{parts:[{text:c.sys}]},contents:hr.current}),signal:ac2.signal});
+      const reqBody={system_instruction:{parts:[{text:c.sys}]},contents:hr.current};
+      const r2=await fetch(geminiUrl,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(reqBody),signal:ac2.signal});
       clearTimeout(t2);
-      if(!r2.ok){const j=await r2.json().catch(()=>({}));throw new Error(`Gemini: ${j.error?.message||r2.status}`);}
+
+      step="Gemini応答解析";
+      if(!r2.ok){
+        const j=await r2.json().catch(()=>({}));
+        throw new Error(`Gemini ${r2.status}: ${j.error?.message||"不明なエラー"}`);
+      }
       const g=await r2.json();
-      // 完全な応答をそのまま保存（思考署名を含めないと2回目以降が失敗する）
-      const fullContent=g.candidates?.[0]?.content;
-      if(fullContent) hr.current.push(fullContent);
-      // 表示・読み上げ用：思考部分を除外して実際の返事だけ取得
-      const parts=fullContent?.parts||[];
-      const textParts=parts.filter(p=>!p.thought&&p.text);
+
+      // 応答の検証
+      if(!g.candidates||g.candidates.length===0){
+        const reason=g.promptFeedback?.blockReason||"応答なし";
+        throw new Error(`Gemini: ${reason}`);
+      }
+      const candidate=g.candidates[0];
+      if(candidate.finishReason&&candidate.finishReason!=="STOP"&&candidate.finishReason!=="MAX_TOKENS"){
+        throw new Error(`Gemini: ${candidate.finishReason}`);
+      }
+
+      // テキスト抽出（思考部分を除外）
+      step="テキスト抽出";
+      const allParts=candidate.content?.parts||[];
+      const textParts=allParts.filter(p=>!p.thought&&p.text);
       const at=textParts.map(p=>p.text).join("")||"（返答なし）";
+
+      // 履歴には実際のテキストのみ保存（思考部分は除外）
+      hr.current.push({role:"model",parts:[{text:at}]});
+
       setMsgs(m=>{const cp=[...m];cp[cp.length-1]={...cp[cp.length-1],text:at,thinking:false,now:true};return cp;});
+
+      // ステップ3: TTS
+      step="TTS";
       sm("speaking");
 
-      const onEnd=()=>{if(ar.current){URL.revokeObjectURL(ar.current.src);} ar.current=null;utr.current=null;setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));sm("waiting");};
+      const onEnd=()=>{if(ar.current){try{URL.revokeObjectURL(ar.current.src);}catch(e){}} ar.current=null;utr.current=null;setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));sm("waiting");};
 
       // VOICEVOX を試す
       let useBrowser=false;
       if(c.voicevox){
         try{
-          const blob = await voicevoxTTS(at, c.voicevox, c.speaker, c.speed);
-          const url = URL.createObjectURL(blob);
+          step="VOICEVOX";
+          const vblob = await voicevoxTTS(at, c.voicevox, c.speaker, c.speed);
+          const url = URL.createObjectURL(vblob);
           const audio = new Audio(url);
           ar.current = audio;
           let ended=false;
           const doEnd=()=>{if(ended)return;ended=true;onEnd();};
           audio.onended=doEnd;
-          audio.onerror=()=>{if(ended)return;ended=true;URL.revokeObjectURL(url);setTtsT("browser");doBrowserTTS(at,onEnd);};
-          // フォールバック1: timeupdate で再生終了を検知
+          audio.onerror=()=>{if(ended)return;ended=true;try{URL.revokeObjectURL(url);}catch(e){} setTtsT("browser");doBrowserTTS(at,onEnd);};
           audio.ontimeupdate=()=>{if(audio.currentTime>0&&audio.duration>0&&audio.currentTime>=audio.duration-0.1){doEnd();}};
-          // フォールバック2: 再生開始後にdurationベースのタイマー
-          audio.onloadedmetadata=()=>{
-            if(audio.duration&&isFinite(audio.duration)){
-              setTimeout(()=>{if(!ended)doEnd();}, (audio.duration*1000)+2000);
-            }
-          };
-          // フォールバック3: 最大30秒で強制終了
-          setTimeout(()=>{if(!ended)doEnd();}, 30000);
+          audio.onloadedmetadata=()=>{if(audio.duration&&isFinite(audio.duration)){setTimeout(()=>{if(!ended)doEnd();},(audio.duration*1000)+2000);}};
+          setTimeout(()=>{if(!ended)doEnd();},30000);
           await audio.play();
           setTtsT("voicevox");
         }catch(e){
@@ -304,10 +327,16 @@ function App() {
         doBrowserTTS(at,onEnd);
       }
       setErr("");
+      clearTimeout(safetyTimer);
     }catch(e){
-      const msg=e.name==="AbortError"?"タイムアウト：接続が遅いか、APIが応答しません":e.message;
+      clearTimeout(safetyTimer);
+      const msg=e.name==="AbortError"?`タイムアウト（${step}）`:(`${step}: ${e.message}`);
       setErr(msg);
       setMsgs(m=>m[m.length-1]?.thinking?m.slice(0,-1):m);
+      // 失敗した場合、最後のユーザーメッセージも履歴から削除
+      if(hr.current.length>0&&hr.current[hr.current.length-1]?.role==="user"){
+        hr.current.pop();
+      }
       sm("waiting");
     }
   },[]);
@@ -396,7 +425,7 @@ function App() {
       <div className="br">
         <button className="bs red" onClick={()=>{setMsgs([]);hr.current=[];}}>クリア</button>
         <button className="bs yel" onClick={()=>{if(ar.current){ar.current.pause();ar.current=null;}window.speechSynthesis.cancel();utr.current=null;setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));sm("waiting");}}>再生停止</button>
-        <button className="bs" onClick={()=>{localStorage.removeItem("hf_vc11");setCfg(null);}}>⚙ 設定</button>
+        <button className="bs" onClick={()=>{localStorage.removeItem("hf_vc12");setCfg(null);}}>⚙ 設定</button>
       </div>
       {err&&<div className="err-box" style={{fontSize:".75rem"}}>{err}</div>}
     </div>
