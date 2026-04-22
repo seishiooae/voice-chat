@@ -19,8 +19,8 @@ const GROQ_STT = "https://api.groq.com/openai/v1/audio/transcriptions";
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models/";
 const GEMINI_MODELS = [
   {id:"gemini-3.1-pro-preview", name:"Gemini 3.1 Pro（思考モデル・高品質）"},
-  {id:"gemini-2.5-flash", name:"Gemini 2.5 Flash（高速・軽量）"},
-  {id:"gemini-2.0-flash", name:"Gemini 2.0 Flash（最速・最軽量）"},
+  {id:"gemini-3-flash-preview", name:"Gemini 3 Flash（新・バランス型）"},
+  {id:"gemini-2.5-flash", name:"Gemini 2.5 Flash（高速・最安）"},
 ];
 
 const SPEAK_THR=22, SPEAK_FRAMES=8, SILENCE_THR=14, SILENCE_FRAMES=90;
@@ -134,7 +134,7 @@ async function voicevoxTTS(text, baseUrl, speaker, speed=1.0) {
 }
 
 function App() {
-  const [cfg,setCfg]=useState(()=>{try{return JSON.parse(localStorage.getItem("hf_vc12")||"null")}catch{return null}});
+  const [cfg,setCfg]=useState(()=>{try{return JSON.parse(localStorage.getItem("hf_vc13")||"null")}catch{return null}});
   const [form,setForm]=useState({
     groq:"",
     gemini:"",
@@ -184,7 +184,7 @@ function App() {
       model: form.model || "gemini-3.1-pro-preview",
       sys: form.sys.trim()
     };
-    localStorage.setItem("hf_vc12",JSON.stringify(c));setCfg(c);cr.current=c;setErr("");
+    localStorage.setItem("hf_vc13",JSON.stringify(c));setCfg(c);cr.current=c;setErr("");
   }
 
   const startVAD=useCallback(async()=>{
@@ -425,7 +425,7 @@ function App() {
       <div className="br">
         <button className="bs red" onClick={()=>{setMsgs([]);hr.current=[];}}>クリア</button>
         <button className="bs yel" onClick={()=>{if(ar.current){ar.current.pause();ar.current=null;}window.speechSynthesis.cancel();utr.current=null;setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));sm("waiting");}}>再生停止</button>
-        <button className="bs" onClick={()=>{localStorage.removeItem("hf_vc12");setCfg(null);}}>⚙ 設定</button>
+        <button className="bs" onClick={()=>{localStorage.removeItem("hf_vc13");setCfg(null);}}>⚙ 設定</button>
       </div>
       {err&&<div className="err-box" style={{fontSize:".75rem"}}>{err}</div>}
     </div>
