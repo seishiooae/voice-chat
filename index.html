@@ -16,7 +16,12 @@
 const { useState, useRef, useEffect, useCallback } = React;
 
 const GROQ_STT = "https://api.groq.com/openai/v1/audio/transcriptions";
-const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent";
+const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models/";
+const GEMINI_MODELS = [
+  {id:"gemini-3.1-pro-preview", name:"Gemini 3.1 Pro（思考モデル・高品質）"},
+  {id:"gemini-2.5-flash", name:"Gemini 2.5 Flash（高速・軽量）"},
+  {id:"gemini-2.0-flash", name:"Gemini 2.0 Flash（最速・最軽量）"},
+];
 
 const SPEAK_THR=22, SPEAK_FRAMES=8, SILENCE_THR=14, SILENCE_FRAMES=90;
 const INT_THR=25, INT_FRAMES=15, CHECK_MS=16;
@@ -111,7 +116,7 @@ select.inp{appearance:auto}
 `;
 
 const ICONS={waiting:"🎧",recording:"🔴",processing:"⚡",speaking:"🔊",interrupted:"⚡"};
-const STXT={waiting:"声を出すと\n自動で録音が始まります",recording:"録音中\n（黙ると自動送信）",processing:"Gemini 3.1 Pro\n思考中...",speaking:"再生中\n（声で割り込み可）",interrupted:"割り込み検知\n録音中..."};
+const STXT={waiting:"声を出すと\n自動で録音が始まります",recording:"録音中\n（黙ると自動送信）",processing:"AI\n思考中...",speaking:"再生中\n（声で割り込み可）",interrupted:"割り込み検知\n録音中..."};
 
 // VOICEVOX TTS
 async function voicevoxTTS(text, baseUrl, speaker, speed=1.0) {
@@ -129,13 +134,14 @@ async function voicevoxTTS(text, baseUrl, speaker, speed=1.0) {
 }
 
 function App() {
-  const [cfg,setCfg]=useState(()=>{try{return JSON.parse(localStorage.getItem("hf_vc9")||"null")}catch{return null}});
+  const [cfg,setCfg]=useState(()=>{try{return JSON.parse(localStorage.getItem("hf_vc11")||"null")}catch{return null}});
   const [form,setForm]=useState({
     groq:"",
     gemini:"",
     voicevox:"https://desktop-jmhh5uq.tail12e509.ts.net",
     speaker:3,
     speed:1.3,
+    model:"gemini-3.1-pro-preview",
     sys:"あなたは親切で会話好きな日本語AIアシスタントです。簡潔に話し言葉で自然な会話をしてください。必ず100文字以内で答えてください。"
   });
   const [started,setStarted]=useState(false);
@@ -175,9 +181,10 @@ function App() {
       voicevox: form.voicevox.trim().replace(/\/$/,""),
       speaker: Number(form.speaker) || 3,
       speed: Number(form.speed) || 1.3,
+      model: form.model || "gemini-3.1-pro-preview",
       sys: form.sys.trim()
     };
-    localStorage.setItem("hf_vc9",JSON.stringify(c));setCfg(c);cr.current=c;setErr("");
+    localStorage.setItem("hf_vc11",JSON.stringify(c));setCfg(c);cr.current=c;setErr("");
   }
 
   const startVAD=useCallback(async()=>{
@@ -243,12 +250,18 @@ function App() {
       // Gemini（60秒タイムアウト）
       const ac2=new AbortController();
       const t2=setTimeout(()=>ac2.abort(),60000);
-      const r2=await fetch(`${GEMINI_URL}?key=${c.gemini}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({system_instruction:{parts:[{text:c.sys}]},contents:hr.current,generationConfig:{thinkingConfig:{thinkingLevel:"LOW"}}}),signal:ac2.signal});
+      const geminiUrl=`${GEMINI_BASE}${c.model}:generateContent?key=${c.gemini}`;
+      const r2=await fetch(geminiUrl,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({system_instruction:{parts:[{text:c.sys}]},contents:hr.current}),signal:ac2.signal});
       clearTimeout(t2);
       if(!r2.ok){const j=await r2.json().catch(()=>({}));throw new Error(`Gemini: ${j.error?.message||r2.status}`);}
       const g=await r2.json();
-      const at=g.candidates?.[0]?.content?.parts?.[0]?.text||"（返答なし）";
-      hr.current.push({role:"model",parts:[{text:at}]});
+      // 完全な応答をそのまま保存（思考署名を含めないと2回目以降が失敗する）
+      const fullContent=g.candidates?.[0]?.content;
+      if(fullContent) hr.current.push(fullContent);
+      // 表示・読み上げ用：思考部分を除外して実際の返事だけ取得
+      const parts=fullContent?.parts||[];
+      const textParts=parts.filter(p=>!p.thought&&p.text);
+      const at=textParts.map(p=>p.text).join("")||"（返答なし）";
       setMsgs(m=>{const cp=[...m];cp[cp.length-1]={...cp[cp.length-1],text:at,thinking:false,now:true};return cp;});
       sm("speaking");
 
@@ -328,6 +341,10 @@ function App() {
     <div className="field"><div className="lbl">Gemini API Key（AI返答）</div>
     <input className="inp" type="password" placeholder="AIza..." value={form.gemini} onChange={e=>setForm(f=>({...f,gemini:e.target.value}))}/>
     <div className="hint"><a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a> → Get API key</div></div>
+    <div className="field"><div className="lbl">AIモデル</div>
+    <select className="inp" value={form.model} onChange={e=>setForm(f=>({...f,model:e.target.value}))}>
+      {GEMINI_MODELS.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
+    </select></div>
     <div className="field"><div className="lbl">VOICEVOX URL（空欄でブラウザ音声）</div>
     <input className="inp" type="text" placeholder="https://xxx.hf.space" value={form.voicevox} onChange={e=>setForm(f=>({...f,voicevox:e.target.value}))}/></div>
     <div className="field"><div className="lbl">VOICEVOXキャラクター</div>
@@ -379,7 +396,7 @@ function App() {
       <div className="br">
         <button className="bs red" onClick={()=>{setMsgs([]);hr.current=[];}}>クリア</button>
         <button className="bs yel" onClick={()=>{if(ar.current){ar.current.pause();ar.current=null;}window.speechSynthesis.cancel();utr.current=null;setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));sm("waiting");}}>再生停止</button>
-        <button className="bs" onClick={()=>{localStorage.removeItem("hf_vc9");setCfg(null);}}>⚙ 設定</button>
+        <button className="bs" onClick={()=>{localStorage.removeItem("hf_vc11");setCfg(null);}}>⚙ 設定</button>
       </div>
       {err&&<div className="err-box" style={{fontSize:".75rem"}}>{err}</div>}
     </div>
