@@ -224,14 +224,27 @@ function App() {
       if(blob.size<1000){sm("waiting");return;}
       const fd=new FormData();fd.append("file",blob,`r.${ext}`);
       fd.append("model","whisper-large-v3-turbo");fd.append("language","ja");fd.append("response_format","text");
-      const r1=await fetch(GROQ_STT,{method:"POST",headers:{Authorization:`Bearer ${c.groq}`},body:fd});
+
+      // Groq STT（15秒タイムアウト）
+      const ac1=new AbortController();
+      const t1=setTimeout(()=>ac1.abort(),15000);
+      const r1=await fetch(GROQ_STT,{method:"POST",headers:{Authorization:`Bearer ${c.groq}`},body:fd,signal:ac1.signal});
+      clearTimeout(t1);
       if(!r1.ok)throw new Error(`STT: ${r1.status}`);
       const ut=(await r1.text()).trim();
       if(!ut||ut.length<2){sm("waiting");return;}
       setMsgs(m=>[...m,{role:"user",text:ut}]);
       setMsgs(m=>[...m,{role:"ai",text:"",thinking:true}]);
       hr.current.push({role:"user",parts:[{text:ut}]});
-      const r2=await fetch(`${GEMINI_URL}?key=${c.gemini}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({system_instruction:{parts:[{text:c.sys}]},contents:hr.current})});
+
+      // 会話履歴を最新20件に制限（長すぎるとGeminiがタイムアウトする）
+      if(hr.current.length>20) hr.current=hr.current.slice(-20);
+
+      // Gemini（60秒タイムアウト）
+      const ac2=new AbortController();
+      const t2=setTimeout(()=>ac2.abort(),60000);
+      const r2=await fetch(`${GEMINI_URL}?key=${c.gemini}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({system_instruction:{parts:[{text:c.sys}]},contents:hr.current,generationConfig:{thinkingConfig:{thinkingLevel:"LOW"}}}),signal:ac2.signal});
+      clearTimeout(t2);
       if(!r2.ok){const j=await r2.json().catch(()=>({}));throw new Error(`Gemini: ${j.error?.message||r2.status}`);}
       const g=await r2.json();
       const at=g.candidates?.[0]?.content?.parts?.[0]?.text||"（返答なし）";
@@ -278,7 +291,12 @@ function App() {
         doBrowserTTS(at,onEnd);
       }
       setErr("");
-    }catch(e){setErr(e.message);setMsgs(m=>m[m.length-1]?.thinking?m.slice(0,-1):m);sm("waiting");}
+    }catch(e){
+      const msg=e.name==="AbortError"?"タイムアウト：接続が遅いか、APIが応答しません":e.message;
+      setErr(msg);
+      setMsgs(m=>m[m.length-1]?.thinking?m.slice(0,-1):m);
+      sm("waiting");
+    }
   },[]);
 
   const doBrowserTTS=(text,onEnd)=>{
