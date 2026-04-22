@@ -239,7 +239,7 @@ function App() {
       setMsgs(m=>{const cp=[...m];cp[cp.length-1]={...cp[cp.length-1],text:at,thinking:false,now:true};return cp;});
       sm("speaking");
 
-      const onEnd=()=>{ar.current=null;utr.current=null;setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));sm("waiting");};
+      const onEnd=()=>{if(ar.current){URL.revokeObjectURL(ar.current.src);} ar.current=null;utr.current=null;setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));sm("waiting");};
 
       // VOICEVOX を試す
       let useBrowser=false;
@@ -249,8 +249,20 @@ function App() {
           const url = URL.createObjectURL(blob);
           const audio = new Audio(url);
           ar.current = audio;
-          audio.onended=()=>{URL.revokeObjectURL(url);onEnd();};
-          audio.onerror=()=>{URL.revokeObjectURL(url);setTtsT("browser");doBrowserTTS(at,onEnd);};
+          let ended=false;
+          const doEnd=()=>{if(ended)return;ended=true;onEnd();};
+          audio.onended=doEnd;
+          audio.onerror=()=>{if(ended)return;ended=true;URL.revokeObjectURL(url);setTtsT("browser");doBrowserTTS(at,onEnd);};
+          // フォールバック1: timeupdate で再生終了を検知
+          audio.ontimeupdate=()=>{if(audio.currentTime>0&&audio.duration>0&&audio.currentTime>=audio.duration-0.1){doEnd();}};
+          // フォールバック2: 再生開始後にdurationベースのタイマー
+          audio.onloadedmetadata=()=>{
+            if(audio.duration&&isFinite(audio.duration)){
+              setTimeout(()=>{if(!ended)doEnd();}, (audio.duration*1000)+2000);
+            }
+          };
+          // フォールバック3: 最大30秒で強制終了
+          setTimeout(()=>{if(!ended)doEnd();}, 30000);
           await audio.play();
           setTtsT("voicevox");
         }catch(e){
