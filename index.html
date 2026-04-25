@@ -113,6 +113,12 @@ body{background:#06090f;color:#e2e8f0;font-family:'Zen Kaku Gothic New',sans-ser
 .od{font-size:.83rem;color:#6b7280;text-align:center;line-height:1.8}
 .ob{padding:16px 36px;background:linear-gradient(135deg,#7c3aed,#6d28d9);border:none;border-radius:14px;color:#fff;font-size:1.1rem;font-weight:700;cursor:pointer}
 select.inp{appearance:auto}
+.ti{display:flex;gap:6px;align-items:flex-end}
+.ti-inp{flex:1;background:rgba(168,85,247,.06);border:1px solid rgba(168,85,247,.2);border-radius:10px;padding:8px 12px;color:#e2e8f0;font-size:.84rem;font-family:inherit;resize:none;outline:none;min-height:36px;max-height:120px;line-height:1.5}
+.ti-inp:focus{border-color:rgba(168,85,247,.55)}
+.ti-btn{padding:8px 14px;background:linear-gradient(135deg,#7c3aed,#6d28d9);border:none;border-radius:10px;color:#fff;font-size:.78rem;font-weight:700;cursor:pointer;white-space:nowrap;flex-shrink:0}
+.ti-btn:disabled{opacity:.4;cursor:default}
+.ti-btn:active:not(:disabled){transform:scale(.95)}
 `;
 
 const ICONS={waiting:"🎧",recording:"🔴",processing:"⚡",speaking:"🔊",interrupted:"⚡"};
@@ -134,7 +140,7 @@ async function voicevoxTTS(text, baseUrl, speaker, speed=1.0) {
 }
 
 function App() {
-  const [cfg,setCfg]=useState(()=>{try{return JSON.parse(localStorage.getItem("hf_vc13")||"null")}catch{return null}});
+  const [cfg,setCfg]=useState(()=>{try{return JSON.parse(localStorage.getItem("hf_vc14")||"null")}catch{return null}});
   const [form,setForm]=useState({
     groq:"",
     gemini:"",
@@ -154,6 +160,7 @@ function App() {
   const [silOk,setSilOk]=useState(false);
   const [bgV,setBgV]=useState(true);
   const [ttsT,setTtsT]=useState("");
+  const [textIn,setTextIn]=useState("");
 
   const mr=useRef("waiting"),cr=useRef(null),sr2=useRef(INT_THR);
   const hr=useRef([]),vr=useRef(null),rr=useRef(null),ch=useRef([]),er=useRef(null);
@@ -184,7 +191,7 @@ function App() {
       model: form.model || "gemini-3.1-pro-preview",
       sys: form.sys.trim()
     };
-    localStorage.setItem("hf_vc13",JSON.stringify(c));setCfg(c);cr.current=c;setErr("");
+    localStorage.setItem("hf_vc14",JSON.stringify(c));setCfg(c);cr.current=c;setErr("");
   }
 
   const startVAD=useCallback(async()=>{
@@ -358,6 +365,75 @@ function App() {
     catch(e){setErr("マイクへのアクセスが拒否されました");}
   },[startVAD,rwl,ssl]);
 
+  const sendText=useCallback(async(text)=>{
+    const c=cr.current;if(!c||!text.trim())return;
+    const ut=text.trim();
+    setTextIn("");
+    let step="start";
+    const safetyTimer=setTimeout(()=>{setErr(`タイムアウト（${step}で停止）`);setMsgs(m=>m[m.length-1]?.thinking?m.slice(0,-1):m);sm("waiting");},120000);
+    try{
+      step="送信準備";
+      setMsgs(m=>[...m,{role:"user",text:ut}]);
+      setMsgs(m=>[...m,{role:"ai",text:"",thinking:true}]);
+      hr.current.push({role:"user",parts:[{text:ut}]});
+      if(hr.current.length>10) hr.current=hr.current.slice(-10);
+
+      step="Gemini送信";
+      sm("processing");
+      const ac2=new AbortController();
+      const t2=setTimeout(()=>ac2.abort(),90000);
+      const geminiUrl=`${GEMINI_BASE}${c.model}:generateContent?key=${c.gemini}`;
+      const r2=await fetch(geminiUrl,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({system_instruction:{parts:[{text:c.sys}]},contents:hr.current}),signal:ac2.signal});
+      clearTimeout(t2);
+
+      step="Gemini応答解析";
+      if(!r2.ok){const j=await r2.json().catch(()=>({}));throw new Error(`Gemini ${r2.status}: ${j.error?.message||"不明なエラー"}`);}
+      const g=await r2.json();
+      if(!g.candidates||g.candidates.length===0){throw new Error(`Gemini: ${g.promptFeedback?.blockReason||"応答なし"}`);}
+      const candidate=g.candidates[0];
+      if(candidate.finishReason&&candidate.finishReason!=="STOP"&&candidate.finishReason!=="MAX_TOKENS"){throw new Error(`Gemini: ${candidate.finishReason}`);}
+
+      step="テキスト抽出";
+      const allParts=candidate.content?.parts||[];
+      const textParts=allParts.filter(p=>!p.thought&&p.text);
+      const at=textParts.map(p=>p.text).join("")||"（返答なし）";
+      hr.current.push({role:"model",parts:[{text:at}]});
+      setMsgs(m=>{const cp=[...m];cp[cp.length-1]={...cp[cp.length-1],text:at,thinking:false,now:true};return cp;});
+
+      step="TTS";
+      sm("speaking");
+      const onEnd=()=>{if(ar.current){try{URL.revokeObjectURL(ar.current.src);}catch(e){}} ar.current=null;utr.current=null;setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));sm("waiting");};
+      let useBrowser=false;
+      if(c.voicevox){
+        try{
+          const vblob=await voicevoxTTS(at,c.voicevox,c.speaker,c.speed);
+          const url=URL.createObjectURL(vblob);
+          const audio=new Audio(url);
+          ar.current=audio;
+          let ended=false;
+          const doEnd=()=>{if(ended)return;ended=true;onEnd();};
+          audio.onended=doEnd;
+          audio.onerror=()=>{if(ended)return;ended=true;try{URL.revokeObjectURL(url);}catch(e){} setTtsT("browser");doBrowserTTS(at,onEnd);};
+          audio.ontimeupdate=()=>{if(audio.currentTime>0&&audio.duration>0&&audio.currentTime>=audio.duration-0.1){doEnd();}};
+          audio.onloadedmetadata=()=>{if(audio.duration&&isFinite(audio.duration)){setTimeout(()=>{if(!ended)doEnd();},(audio.duration*1000)+2000);}};
+          setTimeout(()=>{if(!ended)doEnd();},30000);
+          await audio.play();
+          setTtsT("voicevox");
+        }catch(e){useBrowser=true;}
+      }else{useBrowser=true;}
+      if(useBrowser){setTtsT("browser");doBrowserTTS(at,onEnd);}
+      setErr("");
+      clearTimeout(safetyTimer);
+    }catch(e){
+      clearTimeout(safetyTimer);
+      const msg=e.name==="AbortError"?`タイムアウト（${step}）`:(`${step}: ${e.message}`);
+      setErr(msg);
+      setMsgs(m=>m[m.length-1]?.thinking?m.slice(0,-1):m);
+      if(hr.current.length>0&&hr.current[hr.current.length-1]?.role==="user") hr.current.pop();
+      sm("waiting");
+    }
+  },[]);
+
   const vp=Math.min(100,(vol/255)*100),tp=Math.min(100,(sens/255)*100);
 
   if(!cfg) return(<><style>{css}</style><div className="app"><div className="setup">
@@ -421,11 +497,15 @@ function App() {
       <div ref={er}/>
     </div>
     <div className="bot">
+      <div className="ti">
+        <textarea className="ti-inp" rows={1} placeholder="テキスト入力（貼り付けも可）" value={textIn} onChange={e=>setTextIn(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();if(textIn.trim()&&mode==="waiting")sendText(textIn);}}} onInput={e=>{e.target.style.height="auto";e.target.style.height=Math.min(e.target.scrollHeight,120)+"px";}}/>
+        <button className="ti-btn" disabled={!textIn.trim()||mode!=="waiting"} onClick={()=>sendText(textIn)}>送信</button>
+      </div>
       <div className="sr"><span className="sl">割り込み感度</span><input type="range" className="ss" min={8} max={60} value={sens} onChange={e=>setSens(Number(e.target.value))}/><span className="sl" style={{minWidth:26,textAlign:"right"}}>{sens}</span></div>
       <div className="br">
         <button className="bs red" onClick={()=>{setMsgs([]);hr.current=[];}}>クリア</button>
         <button className="bs yel" onClick={()=>{if(ar.current){ar.current.pause();ar.current=null;}window.speechSynthesis.cancel();utr.current=null;setMsgs(m=>m.map(x=>x.now?{...x,now:false}:x));sm("waiting");}}>再生停止</button>
-        <button className="bs" onClick={()=>{localStorage.removeItem("hf_vc13");setCfg(null);}}>⚙ 設定</button>
+        <button className="bs" onClick={()=>{localStorage.removeItem("hf_vc14");setCfg(null);}}>⚙ 設定</button>
       </div>
       {err&&<div className="err-box" style={{fontSize:".75rem"}}>{err}</div>}
     </div>
